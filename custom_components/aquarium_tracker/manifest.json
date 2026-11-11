@@ -14,6 +14,6 @@
   "documentation": "https://github.com/jagajuda/ha-aquarium-tracker",
   "iot_class": "calculated",
   "requirements": [],
-  "version": "0.2.1",
+  "version": "0.3.0",
   "issue_tracker": "https://github.com/jagajuda/ha-aquarium-tracker/issues"
 }

@@ -20,6 +20,12 @@ const MODE_NAMES = { cycling: "Cycle", maintenance: "Bakım" };
 const STATUS_NAMES = { upcoming: "Yaklaşıyor", due: "Zamanı geldi", snoozed: "Ertelendi", inactive: "Pasif" };
 const USER_TYPES = ["measurement", "dose", "water_change", "fertilize", "maintenance", "note"];
 const ZERO_BASED = new Set(["NH4", "NO2", "NO3", "PO4", "Fe", "Cu"]);
+const PARAM_COLORS = {
+  NH4: "#d62728", NO2: "#9467bd", NO3: "#1f77b4", PO4: "#b8a200", Fe: "#8c564b",
+  Cu: "#17becf", pH: "#e377c2", KH: "#393b79", GH: "#7f7f7f", temp: "#637939",
+};
+const MARKER_TYPES = ["dose", "water_change", "fertilize"];
+const MARKER_SHORT = { dose: "Doz", water_change: "SD", fertilize: "G" };
 
 const esc = (v) =>
   String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -324,14 +330,27 @@ class AquariumTrackerPanel extends HTMLElement {
       case "tank":
         s.tank = v;
         store("tank", v);
+        s.point = null;
         if (s.form && !s.form.id) s.form = this._newForm(v, s.form.type);
         break;
       case "label":
         s.hidden.has(v) ? s.hidden.delete(v) : s.hidden.add(v);
         store("hidden", [...s.hidden]);
         break;
+      case "cparam":
+        this._toggleChart("params", v);
+        break;
+      case "cmarker":
+        this._toggleChart("markers", v);
+        break;
+      case "point": {
+        const p = this.s.point;
+        this.s.point = p && p.id === Number(v) && p.p === w ? null : { id: Number(v), p: w };
+        break;
+      }
       case "range":
         s.range = Number(v);
+        s.point = null;
         store("range", s.range);
         break;
       case "type":
@@ -475,15 +494,36 @@ class AquariumTrackerPanel extends HTMLElement {
     const tankEvents = s.events.filter((e) => e.tank === t.key);
     const startMs = s.range ? Date.now() - s.range * 86400000 : Math.min(...tankEvents.map((e) => Date.parse(e.ts)), Date.now() - 86400000);
     const inRange = tankEvents.filter((e) => Date.parse(e.ts) >= startMs);
-    const visible = inRange.filter((e) => !s.hidden.has(e.label));
+    const cfg = this._chartCfg(t);
+
+    // chart: parameter chips (only parameters that have data) + marker chips
+    const measured = new Set(tankEvents.filter((e) => e.type === "measurement").flatMap((e) => Object.keys(e.payload.values || {})));
+    const paramChips = t.parameters
+      .filter((p) => measured.has(p))
+      .map((p) => {
+        const on = cfg.params.includes(p);
+        return `<button class="chip lbl ${on ? "on" : ""}" style="--c:${this.paramColor(p)}" data-act="cparam" data-v="${p}">${esc(p)}</button>`;
+      })
+      .join("");
+    const markerChips = MARKER_TYPES.filter(
+      (k) => (k !== "dose" || t.stock_solutions.length) && (k !== "fertilize" || t.fertilizers.length)
+    )
+      .map((k) => {
+        const on = cfg.markers.includes(k);
+        return `<button class="chip lbl ${on ? "on" : ""}" style="--c:${this.labelColor(k)}" data-act="cmarker" data-v="${k}">${esc(this.labelName(k))}</button>`;
+      })
+      .join("");
+
+    // list: label chips filter only the list
     const labelsPresent = new Set(tankEvents.map((e) => e.label));
-    const labelChips = s.snap.labels
+    const listChips = s.snap.labels
       .filter((l) => labelsPresent.has(l.key) || (USER_TYPES.includes(l.key) && l.key !== "maintenance"))
       .map((l) => {
         const off = s.hidden.has(l.key);
         return `<button class="chip lbl ${off ? "" : "on"}" style="--c:${this.labelColor(l.key)}" data-act="label" data-v="${l.key}">${esc(l.name)}</button>`;
       })
       .join("");
+    const listed = inRange.filter((e) => !s.hidden.has(e.label));
     const ranges = [
       [7, "7 g"],
       [30, "30 g"],
@@ -503,83 +543,157 @@ class AquariumTrackerPanel extends HTMLElement {
         <div class="row end"><button class="btn ghost" data-act="mode" data-v="${t.key}" data-w="${otherMode}">${MODE_NAMES[otherMode]} moduna geç</button></div>
       </div>
       <div class="card">
-        <div class="chips">${labelChips}</div>
         <div class="chips">${ranges}</div>
-        ${this._renderCharts(t, visible, startMs)}
+        ${paramChips ? `<div class="sub">Parametreler</div><div class="chips">${paramChips}</div>` : ""}
+        ${markerChips ? `<div class="sub">Grafikte göster</div><div class="chips">${markerChips}</div>` : ""}
+        ${this._renderChart(t, inRange, startMs, cfg)}
+        ${this._renderStrip(inRange, startMs)}
       </div>
-      <div class="card">${this._renderTimeline(visible)}</div>`;
+      <div class="card">
+        <div class="sub" style="margin-top:0">Listede göster</div><div class="chips">${listChips}</div>
+        ${this._renderTimeline(listed)}
+      </div>`;
   }
 
-  _renderCharts(t, events, startMs) {
-    if (this.s.hidden.has("measurement")) return "";
+  // Chart selection per tank and mode, remembered on this device
+  _chartCfg(t) {
+    const key = `chart_${t.key}_${t.mode}`;
+    const saved = store(key);
+    if (saved && Array.isArray(saved.params) && Array.isArray(saved.markers)) return saved;
+    const params = (t.mode === "cycling" ? ["NH4", "NO2"] : ["NO3", "PO4"]).filter((p) => t.parameters.includes(p));
+    const markers = t.mode === "cycling" ? ["water_change", "dose"] : ["water_change"];
+    return { params, markers };
+  }
+  _toggleChart(kind, v) {
+    const t = this.tank();
+    const cfg = this._chartCfg(t);
+    const arr = cfg[kind];
+    cfg[kind] = arr.includes(v) ? arr.filter((x) => x !== v) : [...arr, v];
+    store(`chart_${t.key}_${t.mode}`, cfg);
+    this.s.point = null;
+  }
+  paramColor(p) {
+    return PARAM_COLORS[p] || this.labelColor(`p_${p}`);
+  }
+
+  // One chart. One parameter: real axis. Several: each normalised to its own range.
+  _renderChart(t, events, startMs, cfg) {
     const meas = events.filter((e) => e.type === "measurement").sort((a, b) => a.ts.localeCompare(b.ts));
-    const markers = events.filter((e) => ["dose", "water_change", "fertilize"].includes(e.type));
-    const out = [];
-    for (const p of t.parameters) {
-      const pts = meas
-        .filter((e) => e.payload.values && e.payload.values[p] !== undefined)
-        .map((e) => ({ x: Date.parse(e.ts), y: Number(e.payload.values[p]), id: e.id }));
-      if (!pts.length) continue;
-      out.push(this._chart(p, pts, markers, startMs));
-    }
-    return out.length ? `<div class="charts">${out.join("")}</div>` : `<div class="muted pad">Bu aralıkta ölçüm yok</div>`;
-  }
+    const series = cfg.params
+      .map((p) => ({
+        p,
+        pts: meas
+          .filter((e) => e.payload.values && e.payload.values[p] !== undefined)
+          .map((e) => ({ x: Date.parse(e.ts), y: Number(e.payload.values[p]), id: e.id, ts: e.ts })),
+      }))
+      .filter((sr) => sr.pts.length);
+    if (!meas.length) return `<div class="muted pad">Bu aralıkta ölçüm yok</div>`;
+    if (!series.length) return `<div class="muted pad">Grafikte görmek için parametre seç</div>`;
 
-  _chart(p, pts, markers, startMs) {
-    const W = 640,
-      H = 170,
-      L = 40,
-      R = 10,
-      T = 12,
-      B = 22;
-    const x0 = Math.min(startMs, ...pts.map((q) => q.x));
+    const W = 400, H = 210, L = series.length === 1 ? 38 : 10, R = 10, T = 18, B = 22;
+    const x0 = Math.min(startMs, ...series.flatMap((sr) => sr.pts.map((q) => q.x)));
     const x1 = Date.now();
-    const ys = pts.map((q) => q.y);
-    let y0, y1;
-    if (ZERO_BASED.has(p)) {
-      y0 = 0;
-      y1 = Math.max(...ys) * 1.15 || 1;
-    } else {
-      const lo = Math.min(...ys),
-        hi = Math.max(...ys),
-        padv = Math.max((hi - lo) * 0.15, 0.3);
-      y0 = lo - padv;
-      y1 = hi + padv;
-    }
     const sx = (x) => L + ((x - x0) / Math.max(x1 - x0, 1)) * (W - L - R);
-    const sy = (y) => T + (1 - (y - y0) / (y1 - y0)) * (H - T - B);
-    const grid = [0, 0.5, 1]
-      .map((f) => {
-        const yv = y0 + f * (y1 - y0);
-        return `<line x1="${L}" x2="${W - R}" y1="${sy(yv)}" y2="${sy(yv)}" class="grid"/>
-          <text x="${L - 4}" y="${sy(yv) + 4}" class="axis" text-anchor="end">${fmtNum(+yv.toFixed(2))}</text>`;
-      })
-      .join("");
-    const mk = markers
-      .filter((m) => Date.parse(m.ts) >= x0)
+    const domain = (p, ys) => {
+      if (ZERO_BASED.has(p)) return [0, Math.max(...ys) * 1.15 || 1];
+      const lo = Math.min(...ys), hi = Math.max(...ys), pd = Math.max((hi - lo) * 0.15, 0.3);
+      return [lo - pd, hi + pd];
+    };
+    const syN = (f) => T + (1 - f) * (H - T - B); // f in 0..1
+    const single = series.length === 1;
+
+    let grid = "";
+    if (single) {
+      const [y0, y1] = domain(series[0].p, series[0].pts.map((q) => q.y));
+      grid = [0, 0.5, 1]
+        .map((f) => `<line x1="${L}" x2="${W - R}" y1="${syN(f)}" y2="${syN(f)}" class="grid"/>
+          <text x="${L - 4}" y="${syN(f) + 3}" class="axis" text-anchor="end">${fmtNum(+(y0 + f * (y1 - y0)).toFixed(2))}</text>`)
+        .join("");
+    } else {
+      grid = [0, 0.5, 1].map((f) => `<line x1="${L}" x2="${W - R}" y1="${syN(f)}" y2="${syN(f)}" class="grid"/>`).join("");
+    }
+
+    // vertical markers with a short label, skipping labels that would overlap
+    let lastLabelX = -1e9;
+    const mk = events
+      .filter((e) => cfg.markers.includes(e.type) && Date.parse(e.ts) >= x0)
+      .sort((a, b) => a.ts.localeCompare(b.ts))
       .map((m) => {
         const x = sx(Date.parse(m.ts));
-        return `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="${this.labelColor(m.label)}" class="mk"><title>${esc(
-          this.labelName(m.label)
-        )} · ${fmtDT(m.ts)} · ${esc(this._summary(m))}</title></line>`;
+        const c = this.labelColor(m.label);
+        let txt = "";
+        if (x - lastLabelX > 26) {
+          txt = `<text x="${x}" y="${T - 5}" class="mkt" fill="${c}" text-anchor="middle">${MARKER_SHORT[m.type]}</text>`;
+          lastLabelX = x;
+        }
+        return `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="${c}" class="mk"/>${txt}`;
       })
       .join("");
-    const line = pts.map((q) => `${sx(q.x).toFixed(1)},${sy(q.y).toFixed(1)}`).join(" ");
-    const dots = pts
-      .map(
-        (q) =>
-          `<circle cx="${sx(q.x)}" cy="${sy(q.y)}" r="4" class="dot" data-act="edit" data-v="${q.id}"><title>${p} ${fmtNum(q.y)} · ${fmtDT(
-            new Date(q.x).toISOString()
-          )}</title></circle>`
-      )
+
+    const lines = series
+      .map((sr) => {
+        const [y0, y1] = domain(sr.p, sr.pts.map((q) => q.y));
+        const sy = (y) => syN((y - y0) / (y1 - y0));
+        const c = this.paramColor(sr.p);
+        const sel = this.s.point;
+        const poly = sr.pts.length > 1
+          ? `<polyline points="${sr.pts.map((q) => `${sx(q.x).toFixed(1)},${sy(q.y).toFixed(1)}`).join(" ")}" class="ln" stroke="${c}"/>`
+          : "";
+        const dots = sr.pts
+          .map((q) => {
+            const on = sel && sel.id === q.id && sel.p === sr.p;
+            return `<circle cx="${sx(q.x).toFixed(1)}" cy="${sy(q.y).toFixed(1)}" r="${on ? 6 : 4}" fill="${c}" class="dot"/>
+              <circle cx="${sx(q.x).toFixed(1)}" cy="${sy(q.y).toFixed(1)}" r="12" class="hit" data-act="point" data-v="${q.id}" data-w="${sr.p}"/>`;
+          })
+          .join("");
+        return poly + dots;
+      })
       .join("");
-    const d0 = new Date(x0).toLocaleDateString("tr-TR", { day: "2-digit", month: "short" });
-    const d1 = new Date(x1).toLocaleDateString("tr-TR", { day: "2-digit", month: "short" });
-    return `<div class="chart"><div class="ct">${esc(p)} <span class="muted">${esc(this.unit(p))}</span></div>
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${grid}${mk}
-        <polyline points="${line}" class="ln"/>${dots}
-        <text x="${L}" y="${H - 6}" class="axis">${d0}</text>
-        <text x="${W - R}" y="${H - 6}" class="axis" text-anchor="end">${d1}</text></svg></div>`;
+
+    const d = (ms) => new Date(ms).toLocaleDateString("tr-TR", { day: "2-digit", month: "short" });
+    let info = `<div class="muted small">${single ? "" : "Normalize: her parametre kendi aralığında · "}Değeri görmek için noktaya dokun</div>`;
+    const sel = this.s.point;
+    if (sel) {
+      const ev = this.s.events.find((e) => e.id === sel.id);
+      if (ev) {
+        const vals = Object.entries(ev.payload.values || {})
+          .filter(([k]) => cfg.params.includes(k))
+          .map(([k, v]) => `<span style="color:${this.paramColor(k)}"><b>${esc(k)}</b> ${fmtNum(v)} ${esc(this.unit(k))}</span>`)
+          .join(" · ");
+        info = `<div class="ptinfo">${fmtDT(ev.ts)} · ${vals} <button class="btn ghost sm" data-act="edit" data-v="${ev.id}">Düzenle</button></div>`;
+      }
+    }
+    return `<svg class="chart1" viewBox="0 0 ${W} ${H}">${grid}${mk}${lines}
+        <text x="${L}" y="${H - 6}" class="axis">${d(x0)}</text>
+        <text x="${(L + W - R) / 2}" y="${H - 6}" class="axis" text-anchor="middle">${d((x0 + x1) / 2)}</text>
+        <text x="${W - R}" y="${H - 6}" class="axis" text-anchor="end">${d(x1)}</text></svg>${info}`;
+  }
+
+  // One row per action label; every event is a dot on a shared time axis.
+  _renderStrip(events, startMs) {
+    const acts = events.filter((e) => e.type !== "system");
+    if (!acts.length) return "";
+    const x0 = Math.min(startMs, ...acts.map((e) => Date.parse(e.ts)));
+    const x1 = Date.now();
+    const pos = (ts) => (((Date.parse(ts) - x0) / Math.max(x1 - x0, 1)) * 100).toFixed(2);
+    const order = this.s.snap.labels.map((l) => l.key);
+    const labels = [...new Set(acts.map((e) => e.label))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const rows = labels
+      .map((lb) => {
+        const dots = acts
+          .filter((e) => e.label === lb)
+          .map((e) => {
+            const edit = USER_TYPES.includes(e.type) ? `data-act="edit" data-v="${e.id}"` : "";
+            return `<span class="sdot" style="left:${pos(e.ts)}%" ${edit} title="${esc(fmtDT(e.ts) + " · " + this._summary(e))}"></span>`;
+          })
+          .join("");
+        return `<div class="srow" style="--c:${this.labelColor(lb)}"><span class="slabel">${esc(this.labelName(lb))}</span>
+          <span class="strack">${dots}</span></div>`;
+      })
+      .join("");
+    const d = (ms) => new Date(ms).toLocaleDateString("tr-TR", { day: "2-digit", month: "short" });
+    return `<div class="sub">Zaman çizelgesi</div><div class="strip">${rows}
+      <div class="saxis"><span>${d(x0)}</span><span>${d((x0 + x1) / 2)}</span><span>${d(x1)}</span></div></div>`;
   }
 
   _summary(e) {
@@ -786,14 +900,15 @@ const CSS = `
   background:var(--secondary-background-color); color:var(--primary-text-color); font-family:inherit; }
 .grid2 { display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:0 10px; }
 .calc { font-size:14px; color:var(--primary-color); min-height:18px; }
-.charts { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; }
-.chart svg { width:100%; height:150px; display:block; }
-.ct { font-size:13px; font-weight:500; margin-bottom:2px; }
 .grid { stroke:var(--divider-color); stroke-width:1; }
 .axis { font-size:11px; fill:var(--secondary-text-color); }
-.ln { fill:none; stroke:${LABEL_COLORS.measurement}; stroke-width:2; vector-effect:non-scaling-stroke; }
-.dot { fill:${LABEL_COLORS.measurement}; cursor:pointer; }
-.mk { stroke-width:1.5; stroke-dasharray:4 3; opacity:.8; vector-effect:non-scaling-stroke; }
+.chart1 { width:100%; height:auto; display:block; margin-top:4px; }
+.ln { fill:none; stroke-width:2; }
+.dot { pointer-events:none; }
+.hit { fill:transparent; cursor:pointer; }
+.mk { stroke-width:1.2; stroke-dasharray:4 3; opacity:.85; }
+.mkt { font-size:9px; font-weight:600; }
+.ptinfo { display:flex; flex-wrap:wrap; align-items:center; gap:6px; font-size:13px; margin-top:4px; }
 .timeline .day { font-size:12px; color:var(--secondary-text-color); margin:14px 0 4px; font-weight:500; }
 .timeline .day:first-child { margin-top:0; }
 .ev { display:flex; align-items:flex-start; gap:8px; padding:7px 4px; border-radius:6px; cursor:pointer; }
@@ -802,6 +917,14 @@ const CSS = `
 .lb { font-size:11px; color:#fff; background:var(--c); border-radius:8px; padding:3px 7px; flex-shrink:0; }
 .tx { font-size:14px; flex:1; } .note { display:block; font-size:12px; color:var(--secondary-text-color); font-style:italic; }
 .x { border:0; background:transparent; color:var(--secondary-text-color); font-size:18px; cursor:pointer; }
+.strip { margin-top:4px; }
+.srow { display:flex; align-items:center; height:28px; }
+.slabel { width:104px; flex-shrink:0; font-size:11px; color:var(--secondary-text-color); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:6px; }
+.strack { flex:1; position:relative; height:100%; margin-right:8px; }
+.strack::before { content:""; position:absolute; left:0; right:0; top:50%; border-top:1px dashed var(--divider-color); }
+.sdot { position:absolute; top:50%; width:12px; height:12px; border-radius:50%; transform:translate(-50%,-50%);
+  background:var(--c); border:2px solid var(--card-background-color); cursor:pointer; box-sizing:border-box; }
+.saxis { display:flex; justify-content:space-between; margin:2px 8px 0 104px; font-size:11px; color:var(--secondary-text-color); }
 .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#323232; color:#fff; padding:10px 18px;
   border-radius:8px; font-size:14px; z-index:10; } .toast.err { background:var(--error-color); }
 `;
