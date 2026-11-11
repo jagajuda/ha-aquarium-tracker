@@ -2,7 +2,17 @@
 
 Timeline, reminders and fishless-cycle tracking for aquariums. Data stays local (SQLite in `/config`).
 
-## Install (HA OS + Samba)
+## Install via HACS (recommended)
+
+1. HACS → ⋮ → Custom repositories → add `https://github.com/jagajuda/ha-aquarium-tracker`, type **Integration**.
+2. Find **Aquarium Tracker** in HACS → Download.
+3. Restart Home Assistant.
+4. Settings → Devices & services → Add integration → **Aquarium Tracker** → pick your phone's notify service.
+5. Edit `/config/aquarium_tracker/tanks.yaml` (created on first start), then panel → Görevler → "Config'i yeniden yükle".
+
+Updates appear in HACS; download, then restart.
+
+## Install manually (HA OS + Samba)
 
 1. Copy `custom_components/aquarium_tracker/` to `/config/custom_components/aquarium_tracker/`.
 2. Copy `aquarium_tracker/tanks.yaml` to `/config/aquarium_tracker/tanks.yaml`

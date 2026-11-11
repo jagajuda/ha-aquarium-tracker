@@ -1,11 +1,19 @@
 {
   "domain": "aquarium_tracker",
   "name": "Aquarium Tracker",
-  "codeowners": [],
+  "codeowners": [
+    "@jagajuda"
+  ],
   "config_flow": true,
-  "dependencies": ["http", "frontend", "panel_custom", "websocket_api"],
-  "documentation": "https://github.com/",
+  "dependencies": [
+    "http",
+    "frontend",
+    "panel_custom",
+    "websocket_api"
+  ],
+  "documentation": "https://github.com/jagajuda/ha-aquarium-tracker",
   "iot_class": "calculated",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "issue_tracker": "https://github.com/jagajuda/ha-aquarium-tracker/issues"
 }
