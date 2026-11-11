@@ -110,6 +110,51 @@ def compute_due(
     return current
 
 
+def next_in_rotation(
+    rotate: list[str], events: list[tuple[datetime, str]], before: datetime | None
+) -> str:
+    """Action that follows the last rotation action logged before `before`."""
+    last = None
+    for ts, action in sorted(events):
+        if (before is None or ts < before) and action in rotate:
+            last = action
+    if last is None:
+        return rotate[0]
+    return rotate[(rotate.index(last) + 1) % len(rotate)]
+
+
+def rotation_due(
+    s: Schedule,
+    now: datetime,
+    tz: tzinfo,
+    events: list[tuple[datetime, str]],
+    rotate: list[str],
+    anchor: datetime,
+    early_window_h: float,
+) -> tuple[datetime, str]:
+    """Due time and requested action for a rotating maintenance task.
+
+    The requested action is decided at the start of the occurrence window
+    (the action after the last one logged before the window), and only that
+    action completes the occurrence. A skipped week therefore never shifts
+    the order.
+    """
+    if s.type == "interval":
+        times = [ts for ts, a in events if a in rotate]
+        return compute_due(s, now, tz, times, anchor, early_window_h), next_in_rotation(rotate, events, None)
+
+    early = timedelta(hours=early_window_h)
+    current = prev_slot(s, now + early, tz)
+    upcoming = next_slot(s, now + early, tz)
+    if current is None or current < anchor:
+        return upcoming, next_in_rotation(rotate, events, upcoming - early)
+    win_start, win_end = current - early, upcoming - early
+    requested = next_in_rotation(rotate, events, win_start)
+    if any(win_start <= ts < win_end and a == requested for ts, a in events):
+        return upcoming, next_in_rotation(rotate, events, win_end)
+    return current, requested
+
+
 # ---------------------------------------------------------------- cycle
 
 @dataclass

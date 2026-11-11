@@ -120,6 +120,7 @@ class EventStore:
         ts: datetime | None = None,
         payload: dict[str, Any] | None = None,
         note: str | None = None,
+        label: str | None = None,
     ) -> dict[str, Any]:
         assert self._conn
         with self._lock, self._conn:
@@ -130,11 +131,12 @@ class EventStore:
                 raise KeyError(event_id)
             old = self._row(row)
             self._conn.execute(
-                "UPDATE events SET ts = ?, payload = ?, note = ?, updated = ? WHERE id = ?",
+                "UPDATE events SET ts = ?, payload = ?, note = ?, label = ?, updated = ? WHERE id = ?",
                 (
                     to_iso(ts) if ts else old["ts"],
                     json.dumps(payload if payload is not None else old["payload"]),
                     note if note is not None else old["note"],
+                    label if label is not None else old["label"],
                     _now(),
                     event_id,
                 ),

@@ -18,7 +18,7 @@ const PHASE_NAMES = {
 };
 const MODE_NAMES = { cycling: "Cycle", maintenance: "Bakım" };
 const STATUS_NAMES = { upcoming: "Yaklaşıyor", due: "Zamanı geldi", snoozed: "Ertelendi", inactive: "Pasif" };
-const USER_TYPES = ["measurement", "dose", "water_change", "fertilize", "note"];
+const USER_TYPES = ["measurement", "dose", "water_change", "fertilize", "maintenance", "note"];
 const ZERO_BASED = new Set(["NH4", "NO2", "NO3", "PO4", "Fe", "Cu"]);
 
 const esc = (v) =>
@@ -196,6 +196,7 @@ class AquariumTrackerPanel extends HTMLElement {
       values: {},
       percent: t?.water_change_default_percent ?? "",
       doses: {},
+      action: task?.action || "",
     };
     if (type === "measurement") {
       if (task?.params) f.params = [...task.params];
@@ -230,6 +231,8 @@ class AquariumTrackerPanel extends HTMLElement {
       f.percent = p.percent ?? "";
     } else if (ev.type === "fertilize") {
       f.doses = Object.fromEntries(Object.keys(f.doses).map((k) => [k, p.doses?.[k] ?? ""]));
+    } else if (ev.type === "maintenance") {
+      f.action = p.action || "";
     }
     this.s.form = f;
     this.s.tank = ev.tank;
@@ -254,6 +257,8 @@ class AquariumTrackerPanel extends HTMLElement {
         return { percent: f.percent };
       case "fertilize":
         return { doses: f.doses };
+      case "maintenance":
+        return { action: f.action };
       default:
         return {};
     }
@@ -262,6 +267,10 @@ class AquariumTrackerPanel extends HTMLElement {
     const f = this.s.form;
     if (f.type === "measurement" && f.params.some((p) => (f.values[p] ?? "") === "")) {
       this._toast("Seçili parametrelerin hepsine değer gir (ya da seçimi kaldır)", true);
+      return;
+    }
+    if (f.type === "maintenance" && !f.action) {
+      this._toast("Bakım işi seç", true);
       return;
     }
     const ts = f.tsTouched ? new Date(f.ts).toISOString() : null;
@@ -325,6 +334,9 @@ class AquariumTrackerPanel extends HTMLElement {
         break;
       case "type":
         if (!s.form.id) s.form = this._newForm(s.form.tank, v);
+        break;
+      case "action":
+        s.form.action = v;
         break;
       case "param": {
         const ps = s.form.params;
@@ -464,7 +476,7 @@ class AquariumTrackerPanel extends HTMLElement {
     const visible = inRange.filter((e) => !s.hidden.has(e.label));
     const labelsPresent = new Set(tankEvents.map((e) => e.label));
     const labelChips = s.snap.labels
-      .filter((l) => labelsPresent.has(l.key) || USER_TYPES.includes(l.key))
+      .filter((l) => labelsPresent.has(l.key) || (USER_TYPES.includes(l.key) && l.key !== "maintenance"))
       .map((l) => {
         const off = s.hidden.has(l.key);
         return `<button class="chip lbl ${off ? "" : "on"}" style="--c:${this.labelColor(l.key)}" data-act="label" data-v="${l.key}">${esc(l.name)}</button>`;
@@ -583,6 +595,8 @@ class AquariumTrackerPanel extends HTMLElement {
       }
       case "water_change":
         return p.percent ? `%${fmtNum(p.percent)} (${fmtNum(p.volume_l)} L)` : "Su değiştirildi";
+      case "maintenance":
+        return "Yapıldı";
       case "fertilize":
         return Object.entries(p.doses || {})
           .map(([k, v]) => `${t?.fertilizers.find((f) => f.key === k)?.name || k} ${fmtNum(v)} ${p.units?.[k] || ""}`)
@@ -629,7 +643,10 @@ class AquariumTrackerPanel extends HTMLElement {
     const t = this.tank(f.tank);
     if (!t) return "";
     const types = USER_TYPES.filter(
-      (k) => (k !== "dose" || t.stock_solutions.length) && (k !== "fertilize" || t.fertilizers.length)
+      (k) =>
+        (k !== "dose" || t.stock_solutions.length) &&
+        (k !== "fertilize" || t.fertilizers.length) &&
+        (k !== "maintenance" || t.maintenance_actions.length)
     );
     const typeChips = types
       .map(
@@ -661,6 +678,13 @@ class AquariumTrackerPanel extends HTMLElement {
     } else if (f.type === "water_change") {
       fields = `<label class="fld"><span>Değişim (%) <span class="muted">opsiyonel · ${fmtNum(t.net_volume_l)} L tank</span></span>
         <input type="text" inputmode="decimal" data-f="percent" value="${esc(f.percent)}"></label>`;
+    } else if (f.type === "maintenance") {
+      fields = `<div class="sub">Yapılan iş</div><div class="chips">${t.maintenance_actions
+        .map(
+          (a) =>
+            `<button class="chip lbl ${f.action === a.key ? "on" : ""}" style="--c:${this.labelColor(a.key)}" data-act="action" data-v="${a.key}">${esc(a.name)}</button>`
+        )
+        .join("")}</div>`;
     } else if (f.type === "fertilize") {
       fields = `<div class="grid2">${t.fertilizers
         .map(
@@ -697,7 +721,7 @@ class AquariumTrackerPanel extends HTMLElement {
   _taskRow(x, showTank) {
     const t = this.tank(x.tank);
     const st = x.status;
-    const params = x.params?.length ? ` · ${x.params.join(", ")}` : "";
+    const params = x.params?.length ? ` · ${x.params.join(", ")}` : x.action_name ? ` · ${x.action_name}` : "";
     return `<div class="task ${st}">
       <div class="tinfo"><b>${showTank ? esc(t.name) + " · " : ""}${esc(x.title)}</b>
         <div class="muted small">${x.due ? `${fmtDT(x.due)} (${until(x.due)})` : ""}${esc(params)}</div></div>

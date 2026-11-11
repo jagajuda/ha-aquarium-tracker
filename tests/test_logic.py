@@ -132,3 +132,29 @@ def test_store(tmp_path):
     assert [a["action"] for a in s.audit_for(e["id"])] == ["create", "update", "delete"]
     s.set_state("k", {"a": 1})
     assert s.get_state()["k"] == {"a": 1}
+
+
+def test_rotation():
+    from aqt.logic import rotation_due
+    task = CFG.tanks["nano_tank"].tasks["filter_maintenance"]
+    s, rot = task.schedule, task.rotate
+    assert rot == ["filter_clean", "prefilter_clean"]
+    anchor = t("2026-11-11T10:00")
+    # no history -> Sat 14 Nov, main filter first
+    assert rotation_due(s, t("2026-11-11T10:00"), TZ, [], rot, anchor, 24) == (t("2026-11-14T14:00"), "filter_clean")
+    # last week's prefilter logged retroactively -> still main filter
+    hist = [(t("2026-11-07T14:00"), "prefilter_clean")]
+    assert rotation_due(s, t("2026-11-11T10:00"), TZ, hist, rot, anchor, 24)[1] == "filter_clean"
+    # Saturday 15:00, not done -> overdue, main filter
+    assert rotation_due(s, t("2026-11-14T15:00"), TZ, hist, rot, anchor, 24) == (t("2026-11-14T14:00"), "filter_clean")
+    # logging the wrong action does not complete it
+    wrong = hist + [(t("2026-11-14T15:00"), "prefilter_clean")]
+    assert rotation_due(s, t("2026-11-14T16:00"), TZ, wrong, rot, anchor, 24) == (t("2026-11-14T14:00"), "filter_clean")
+    # main filter done -> next Saturday asks prefilter
+    done = hist + [(t("2026-11-14T15:00"), "filter_clean")]
+    assert rotation_due(s, t("2026-11-14T16:00"), TZ, done, rot, anchor, 24) == (t("2026-11-21T14:00"), "prefilter_clean")
+    # skip the 21st entirely -> on the 28th it still asks prefilter (order kept)
+    assert rotation_due(s, t("2026-11-28T15:00"), TZ, done, rot, anchor, 24) == (t("2026-11-28T14:00"), "prefilter_clean")
+    # unrelated actions (glass_clean) never affect rotation
+    extra = done + [(t("2026-11-20T10:00"), "glass_clean")]
+    assert rotation_due(s, t("2026-11-21T15:00"), TZ, extra, rot, anchor, 24)[1] == "prefilter_clean"

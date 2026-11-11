@@ -43,6 +43,11 @@ If the YAML is invalid the integration fails to load and the error is shown in t
     completes that slot. A missed slot stays overdue until the next slot's window opens.
   - `reminder`: first push at due time, then `repeat_count` repeats every `repeat_interval_min` until logged.
     "Ertele" on the notification snoozes for `settings.snooze_min`.
+- **Maintenance actions**: per-tank list under `maintenance_actions` (filter clean, glass clean, trimming…).
+  Logged with the `maintenance` event type; each action is its own timeline label. A task can reference one
+  `action`, or `rotate` through several: the action requested for an occurrence is the one after the last
+  rotation action logged before that occurrence's window, and only that action completes it — a skipped week
+  never shifts the order. Actions without a task are simply logged.
 - **Mode**: `cycling` or `maintenance`, per tank. Tasks run only in their `modes`. Mode is stored in the DB;
   `initial_mode` is only used on first start. Switch from the panel.
 - **Cycle**: a dose passes if a measurement within `test_window_h` after it (and before the next dose) shows
