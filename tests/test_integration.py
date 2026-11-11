@@ -58,6 +58,15 @@ async def test_flow(hass, setup, freezer, hass_ws_client, hass_admin_user):
     assert hass.states.get("sensor.big_tank_nh4").state == "2.0"
     assert hass.states.get("sensor.big_tank_status").state == "cycling_ammonia"
 
+    # decimal comma (iOS Turkish keyboard) accepted, garbage rejected with a clear error
+    r = await ws_call(ws, type="aquarium_tracker/add_event", tank="big_tank", event_type="dose",
+                      payload={"volume_ml": "1,5"})
+    assert r["success"] and r["result"]["payload"]["volume_ml"] == 1.5, r
+    await ws_call(ws, type="aquarium_tracker/delete_event", event_id=r["result"]["id"])
+    r = await ws_call(ws, type="aquarium_tracker/add_event", tank="big_tank", event_type="dose",
+                      payload={"volume_ml": "abc"})
+    assert not r["success"] and "geçersiz sayı" in r["error"]["message"]
+
     # invalid
     r = await ws_call(ws, type="aquarium_tracker/add_event", tank="big_tank", event_type="measurement",
                       payload={"values": {}})

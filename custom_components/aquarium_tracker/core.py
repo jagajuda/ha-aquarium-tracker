@@ -35,6 +35,16 @@ LABEL_NAMES = {
 }
 
 
+def _num(value: Any, what: str) -> float:
+    """Parse a user-entered number; accepts a decimal comma ("0,5")."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        return float(str(value).strip().replace(",", "."))
+    except ValueError as err:
+        raise ValueError(f"{what}: geçersiz sayı {value!r}") from err
+
+
 def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
@@ -274,7 +284,7 @@ class AquariumTracker:
             key = payload.get("solution") or next(iter(tank.stock_solutions))
             if key not in tank.stock_solutions:
                 raise ValueError(f"Bilinmeyen solüsyon: {key}")
-            vol = float(payload.get("volume_ml") or 0)
+            vol = _num(payload.get("volume_ml") or 0, "Doz hacmi")
             if vol <= 0:
                 raise ValueError("Doz hacmi (mL) 0'dan büyük olmalı")
             sol = tank.stock_solutions[key]
@@ -292,7 +302,7 @@ class AquariumTracker:
                     continue
                 if p not in self.config.parameters:
                     raise ValueError(f"Bilinmeyen parametre: {p}")
-                vals[p] = float(v)
+                vals[p] = _num(v, p)
             if not vals:
                 raise ValueError("En az bir ölçüm değeri gir")
             out: dict[str, Any] = {"values": vals}
@@ -307,15 +317,15 @@ class AquariumTracker:
             out = {}
             pct = payload.get("percent")
             if pct not in (None, ""):
-                pct = float(pct)
+                pct = _num(pct, "Yüzde")
                 if not 0 < pct <= 100:
                     raise ValueError("Yüzde 0-100 arasında olmalı")
                 out["percent"] = pct
                 out["volume_l"] = round(pct / 100 * tank.net_volume_l, 1)
             vol = payload.get("volume_l")
             if vol not in (None, "") and "percent" not in out:
-                out["volume_l"] = float(vol)
-                out["percent"] = round(float(vol) / tank.net_volume_l * 100, 1)
+                out["volume_l"] = _num(vol, "Hacim")
+                out["percent"] = round(out["volume_l"] / tank.net_volume_l * 100, 1)
             return out
         if type_ == "fertilize":
             doses: dict[str, float] = {}
@@ -324,7 +334,7 @@ class AquariumTracker:
                     continue
                 if k not in tank.fertilizers:
                     raise ValueError(f"Bilinmeyen gübre: {k}")
-                doses[k] = float(v)
+                doses[k] = _num(v, tank.fertilizers[k].name)
             if not doses:
                 raise ValueError("En az bir gübre dozu gir")
             return {"doses": doses, "units": {k: tank.fertilizers[k].unit for k in doses}}
