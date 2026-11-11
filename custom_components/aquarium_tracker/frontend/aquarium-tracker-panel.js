@@ -29,6 +29,8 @@ const toLocalInput = (d) =>
 const fmtDT = (iso) =>
   new Date(iso).toLocaleString("tr-TR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 const fmtDay = (d) => d.toLocaleDateString("tr-TR", { weekday: "short", day: "2-digit", month: "long", year: "numeric" });
+// iOS Turkish keyboards only offer a decimal comma
+const num = (v) => (typeof v === "string" ? v.trim().replace(",", ".") : v);
 const fmtNum = (v) => (v === null || v === undefined || v === "" ? "–" : Number(v).toLocaleString("tr-TR", { maximumFractionDigits: 3 }));
 function ago(iso) {
   const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
@@ -250,13 +252,13 @@ class AquariumTrackerPanel extends HTMLElement {
   _payload(f) {
     switch (f.type) {
       case "measurement":
-        return { values: Object.fromEntries(f.params.map((p) => [p, f.values[p] ?? ""])) };
+        return { values: Object.fromEntries(f.params.map((p) => [p, num(f.values[p] ?? "")])) };
       case "dose":
-        return { solution: f.solution, volume_ml: f.volume_ml };
+        return { solution: f.solution, volume_ml: num(f.volume_ml) };
       case "water_change":
-        return { percent: f.percent };
+        return { percent: num(f.percent) };
       case "fertilize":
-        return { doses: f.doses };
+        return { doses: Object.fromEntries(Object.entries(f.doses).map(([k, v]) => [k, num(v)])) };
       case "maintenance":
         return { action: f.action };
       default:
@@ -402,7 +404,7 @@ class AquariumTrackerPanel extends HTMLElement {
     const f = this.s.form;
     const t = this.tank(f.tank);
     const sol = t?.stock_solutions.find((x) => x.key === f.solution);
-    const v = parseFloat(String(f.volume_ml).replace(",", "."));
+    const v = parseFloat(num(String(f.volume_ml)));
     span.textContent = sol && v > 0 ? `≈ +${fmtNum((v * sol.nh4_mg_per_ml) / t.net_volume_l)} mg/L NH4` : "";
   }
 

@@ -1,7 +1,7 @@
 """Constants for Aquarium Tracker."""
 
 DOMAIN = "aquarium_tracker"
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 CONFIG_DIR = "aquarium_tracker"
 CONFIG_FILE = "tanks.yaml"
