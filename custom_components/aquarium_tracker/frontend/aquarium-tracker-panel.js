@@ -506,6 +506,7 @@ class AquariumTrackerPanel extends HTMLElement {
         <div class="chips">${labelChips}</div>
         <div class="chips">${ranges}</div>
         ${this._renderCharts(t, visible, startMs)}
+        ${this._renderStrip(visible, startMs)}
       </div>
       <div class="card">${this._renderTimeline(visible)}</div>`;
   }
@@ -580,6 +581,33 @@ class AquariumTrackerPanel extends HTMLElement {
         <polyline points="${line}" class="ln"/>${dots}
         <text x="${L}" y="${H - 6}" class="axis">${d0}</text>
         <text x="${W - R}" y="${H - 6}" class="axis" text-anchor="end">${d1}</text></svg></div>`;
+  }
+
+  // One row per action label; every event is a dot on a shared time axis.
+  _renderStrip(events, startMs) {
+    const acts = events.filter((e) => e.type !== "system");
+    if (!acts.length) return "";
+    const x0 = Math.min(startMs, ...acts.map((e) => Date.parse(e.ts)));
+    const x1 = Date.now();
+    const pos = (ts) => (((Date.parse(ts) - x0) / Math.max(x1 - x0, 1)) * 100).toFixed(2);
+    const order = this.s.snap.labels.map((l) => l.key);
+    const labels = [...new Set(acts.map((e) => e.label))].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    const rows = labels
+      .map((lb) => {
+        const dots = acts
+          .filter((e) => e.label === lb)
+          .map((e) => {
+            const edit = USER_TYPES.includes(e.type) ? `data-act="edit" data-v="${e.id}"` : "";
+            return `<span class="sdot" style="left:${pos(e.ts)}%" ${edit} title="${esc(fmtDT(e.ts) + " · " + this._summary(e))}"></span>`;
+          })
+          .join("");
+        return `<div class="srow" style="--c:${this.labelColor(lb)}"><span class="slabel">${esc(this.labelName(lb))}</span>
+          <span class="strack">${dots}</span></div>`;
+      })
+      .join("");
+    const d = (ms) => new Date(ms).toLocaleDateString("tr-TR", { day: "2-digit", month: "short" });
+    return `<div class="sub">Zaman çizelgesi</div><div class="strip">${rows}
+      <div class="saxis"><span>${d(x0)}</span><span>${d((x0 + x1) / 2)}</span><span>${d(x1)}</span></div></div>`;
   }
 
   _summary(e) {
@@ -802,6 +830,14 @@ const CSS = `
 .lb { font-size:11px; color:#fff; background:var(--c); border-radius:8px; padding:3px 7px; flex-shrink:0; }
 .tx { font-size:14px; flex:1; } .note { display:block; font-size:12px; color:var(--secondary-text-color); font-style:italic; }
 .x { border:0; background:transparent; color:var(--secondary-text-color); font-size:18px; cursor:pointer; }
+.strip { margin-top:4px; }
+.srow { display:flex; align-items:center; height:28px; }
+.slabel { width:104px; flex-shrink:0; font-size:11px; color:var(--secondary-text-color); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:6px; }
+.strack { flex:1; position:relative; height:100%; margin-right:8px; }
+.strack::before { content:""; position:absolute; left:0; right:0; top:50%; border-top:1px dashed var(--divider-color); }
+.sdot { position:absolute; top:50%; width:12px; height:12px; border-radius:50%; transform:translate(-50%,-50%);
+  background:var(--c); border:2px solid var(--card-background-color); cursor:pointer; box-sizing:border-box; }
+.saxis { display:flex; justify-content:space-between; margin:2px 8px 0 104px; font-size:11px; color:var(--secondary-text-color); }
 .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#323232; color:#fff; padding:10px 18px;
   border-radius:8px; font-size:14px; z-index:10; } .toast.err { background:var(--error-color); }
 `;
