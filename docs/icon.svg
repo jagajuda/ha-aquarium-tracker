@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1fa3c7"/><stop offset="1" stop-color="#0b6e8f"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".95"/><stop offset="1" stop-color="#d8f3fb" stop-opacity=".95"/>
+    </linearGradient>
+    <clipPath id="tank"><rect x="96" y="132" width="320" height="250" rx="26"/></clipPath>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- tank outline -->
+  <rect x="96" y="132" width="320" height="250" rx="26" fill="none" stroke="#fff" stroke-width="18"/>
+  <!-- water with wave -->
+  <g clip-path="url(#tank)">
+    <path d="M80 196 C130 176 170 216 220 196 S310 176 352 196 S410 216 440 196 V400 H80 Z" fill="url(#water)"/>
+    <!-- plant -->
+    <path d="M150 382 C150 330 128 312 138 268 M150 382 C158 336 182 324 176 284" stroke="#27ae60" stroke-width="13" fill="none" stroke-linecap="round"/>
+    <!-- trend line (falling then flat) -->
+    <polyline points="200,236 248,276 290,330 332,338 372,338" fill="none" stroke="#e67e22" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="200" cy="236" r="13" fill="#e67e22"/><circle cx="290" cy="330" r="13" fill="#e67e22"/><circle cx="372" cy="338" r="13" fill="#e67e22"/>
+  </g>
+  <!-- stand -->
+  <rect x="146" y="398" width="220" height="18" rx="9" fill="#fff" opacity=".9"/>
+</svg>

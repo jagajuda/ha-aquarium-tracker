@@ -1,3 +1,5 @@
+<img src="docs/icon.svg" width="96" align="right" alt="">
+
 # Aquarium Tracker for Home Assistant
 
 Timeline, reminders and fishless-cycle tracking for aquariums. Data stays local (SQLite in `/config`).
@@ -59,6 +61,10 @@ If the YAML is invalid the integration fails to load and the error is shown in t
   measurement, free NH3 is derived (Emerson et al.).
 - **Dose**: NH4Cl stock → mg/L NH4 added, computed from `g_per_100ml` and `net_volume_l`.
 
+## Logo
+
+Shown on the integrations page and in HACS on Home Assistant 2026.3 or newer (`custom_components/aquarium_tracker/brand/`).
+
 ## Entities
 
 Per tank: `sensor.<tank>_<param>` (latest value, `state_class: measurement` → long-term statistics),
@@ -91,3 +97,27 @@ pytest tests/test_logic.py
 pip install pytest-homeassistant-custom-component home-assistant-frontend   # full HA tests
 pytest tests/test_integration.py
 ```
+
+## Future work
+
+### Live sensors (ESP32: temperature, maybe pH)
+Hardware plan: [docs/esp32-controller.md](docs/esp32-controller.md).
+Tracker side:
+- Map a tank parameter to a live HA sensor in `tanks.yaml` (e.g. `live_sensors: {temp: sensor.big_tank_temperature, pH: sensor.big_tank_ph}`).
+- Plot live values as a continuous line in the chart and show them in the value tiles; manual readings stay as points.
+- Per-tank threshold alerts (e.g. temperature outside 22–27 °C) through the existing notification system,
+  so a stuck heater or a failed one is caught.
+- Continuous data stays in HA's recorder/long-term statistics; it does not become timeline events.
+
+### Chihiros light states (B20 nano, B80 big tank)
+- Get the lights into HA over Bluetooth with an existing community integration
+  ([chihiros-led-control](https://github.com/TheMicDiet/chihiros-led-control) or
+  [AquaBle](https://github.com/caleb-venner/AquaBle)); an ESPHome Bluetooth proxy on the ESP32 extends range.
+- Log on/off (and possibly brightness changes) on the timeline with `watch_entities`, which already works.
+- To verify: whether the light entity follows the light's own built-in schedule (auto mode) or only
+  changes made from HA. If only the latter, the photoperiod has to be scheduled from HA for the timeline to be complete.
+
+### Smaller ideas
+- Optional separate toggle for chart lines vs. list filtering if the current split is not enough.
+- Value tiles instead of a chart for parameters with a single reading in range.
+
