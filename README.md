@@ -117,6 +117,16 @@ Tracker side:
 - To verify: whether the light entity follows the light's own built-in schedule (auto mode) or only
   changes made from HA. If only the latter, the photoperiod has to be scheduled from HA for the timeline to be complete.
 
+### Livestock and plant log
+- New event types for stocking changes, e.g. `livestock_added` / `livestock_removed` / `plant_added` / `plant_removed`
+  with species, count and an optional note (source, price, quarantine).
+  A death is a `livestock_removed` with a reason (`died`, `rehomed`, `moved_to:<tank>`).
+- Moving livestock or plants between tanks becomes one action that writes a remove on one tank and an add on the other.
+- Each tank gets a derived **current inventory** (species → count), computed from the log, so it can be edited the same
+  way as any other event (corrections recompute the totals).
+- Shown on the dashboard as an inventory card; every change shows up on the timeline with its own label.
+- Optional per-tank species list in `tanks.yaml` for one-tap entry (e.g. Neocaridina, Galaxy rasbora, Anubias nana).
+
 ### Smaller ideas
 - Optional separate toggle for chart lines vs. list filtering if the current split is not enough.
 - Value tiles instead of a chart for parameters with a single reading in range.
