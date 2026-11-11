@@ -11,7 +11,7 @@ TZ = ZoneInfo("Europe/Istanbul")
 
 
 @pytest.fixture
-async def setup(hass: HomeAssistant, hass_ws_client, freezer):
+async def setup(hass: HomeAssistant, hass_ws_client, freezer, hass_admin_user):
     import shutil; shutil.rmtree(hass.config.path("aquarium_tracker"), ignore_errors=True)
     await hass.config.async_set_time_zone("Europe/Istanbul")
     freezer.move_to(datetime(2026, 11, 11, 10, 0, tzinfo=TZ))
@@ -24,7 +24,8 @@ async def setup(hass: HomeAssistant, hass_ws_client, freezer):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    ws = await hass_ws_client(hass)
+    rt = await hass.auth.async_create_refresh_token(hass_admin_user, "https://example.com/")
+    ws = await hass_ws_client(hass, access_token=hass.auth.async_create_access_token(rt))
     return entry, calls, ws
 
 
@@ -111,6 +112,25 @@ async def test_flow(hass, setup, freezer, hass_ws_client, hass_admin_user):
     r = await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="fertilize",
                       payload={"doses": {"trace": 3, "potash": 3}})
     assert r["success"], r
+
+    # maintenance: own label, rotation, edit changes label
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    nano = r["result"]["tanks"][1]
+    fm = [x for x in nano["tasks"] if x["task"] == "filter_maintenance"][0]
+    assert fm["action"] == "filter_clean" and fm["action_name"] == "Main filter clean"
+    assert any(l["key"] == "glass_clean" for l in r["result"]["labels"])
+    r = await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="maintenance",
+                      payload={"action": "glass_clean"})
+    assert r["success"] and r["result"]["label"] == "glass_clean", r
+    gid = r["result"]["id"]
+    r = await ws_call(ws, type="aquarium_tracker/update_event", event_id=gid, payload={"action": "trim"})
+    assert r["result"]["label"] == "trim"
+    r = await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="maintenance",
+                      payload={"action": "nope"})
+    assert not r["success"]
+    r = await ws_call(ws, type="aquarium_tracker/add_event", tank="big_tank", event_type="maintenance",
+                      payload={"action": "trim"})
+    assert not r["success"]
 
     # service
     await hass.services.async_call(DOMAIN, "log_event", {"tank": "nano_tank", "type": "note", "note": "hello"}, blocking=True)

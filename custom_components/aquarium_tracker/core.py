@@ -17,7 +17,7 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .const import NOTIFY_ACTION_PREFIX, PANEL_URL_PATH, SIGNAL_UPDATED, TICK_SECONDS
-from .logic import CycleStatus, compute_due, dose_nh4_mg_l, evaluate_cycle, free_nh3_mg_l
+from .logic import CycleStatus, compute_due, dose_nh4_mg_l, evaluate_cycle, free_nh3_mg_l, rotation_due
 from .model import MODES, USER_EVENT_TYPES, Tank, Task, TrackerConfig
 from .store import EventStore
 
@@ -29,6 +29,7 @@ LABEL_NAMES = {
     "measurement": "Ölçüm",
     "water_change": "Su değişimi",
     "fertilize": "Gübreleme",
+    "maintenance": "Bakım",
     "note": "Not",
     "system": "Sistem",
 }
@@ -172,21 +173,26 @@ class AquariumTracker:
             "status": "inactive",
             "snoozed_until": st.get("snoozed_until"),
             "cycle_phase": cs.phase if cs else None,
+            "action": None,
+            "action_name": None,
         }
         if not active:
             return info
         anchor = _parse(st["anchor"]) if "anchor" in st else now
-        times = [_parse(e["ts"]) for e in self._events if e["tank"] == tank.key and e["type"] == task.event]
-        interval_days = tank.cycle.verify_every_days if (cs and cs.phase == "verify") else None
-        due = compute_due(
-            task.schedule,
-            now,
-            dt_util.get_default_time_zone(),
-            times,
-            anchor,
-            task.early_window_h,
-            interval_days,
-        )
+        tz = dt_util.get_default_time_zone()
+        if task.rotate:
+            done = [
+                (_parse(e["ts"]), e["payload"].get("action"))
+                for e in self._events
+                if e["tank"] == tank.key and e["type"] == "maintenance"
+            ]
+            due, action = rotation_due(task.schedule, now, tz, done, task.rotate, anchor, task.early_window_h)
+            info["action"] = action
+            info["action_name"] = tank.maintenance_actions[action].name
+        else:
+            times = [_parse(e["ts"]) for e in self._events if e["tank"] == tank.key and e["type"] == task.event]
+            interval_days = tank.cycle.verify_every_days if (cs and cs.phase == "verify") else None
+            due = compute_due(task.schedule, now, tz, times, anchor, task.early_window_h, interval_days)
         info["due"] = due.astimezone(dt_util.UTC).isoformat()
         snoozed = st.get("snoozed_until")
         if now < due:
@@ -209,6 +215,10 @@ class AquariumTracker:
         out = [{"key": k, "name": LABEL_NAMES[k]} for k in (*USER_EVENT_TYPES, "system")]
         seen = {o["key"] for o in out}
         for tank in self.config.tanks.values():
+            for a in tank.maintenance_actions.values():
+                if a.key not in seen:
+                    out.append({"key": a.key, "name": a.name})
+                    seen.add(a.key)
             for w in tank.watch_entities:
                 if w.label not in seen:
                     out.append({"key": w.label, "name": w.name})
@@ -235,6 +245,9 @@ class AquariumTracker:
                     "fertilizers": [
                         {"key": f.key, "name": f.name, "default_dose": f.default_dose, "unit": f.unit}
                         for f in tank.fertilizers.values()
+                    ],
+                    "maintenance_actions": [
+                        {"key": a.key, "name": a.name} for a in tank.maintenance_actions.values()
                     ],
                     "water_change_default_percent": tank.water_change_default_percent,
                     "default_temp_c": tank.default_temp_c,
@@ -315,6 +328,11 @@ class AquariumTracker:
             if not doses:
                 raise ValueError("En az bir gübre dozu gir")
             return {"doses": doses, "units": {k: tank.fertilizers[k].unit for k in doses}}
+        if type_ == "maintenance":
+            key = payload.get("action")
+            if key not in tank.maintenance_actions:
+                raise ValueError("Bakım işi seç")
+            return {"action": key, "action_name": tank.maintenance_actions[key].name}
         if type_ == "note":
             if not note.strip():
                 raise ValueError("Not boş olamaz")
@@ -339,6 +357,8 @@ class AquariumTracker:
         if source == "manual" and type_ not in USER_EVENT_TYPES:
             raise ValueError(f"Geçersiz event tipi: {type_}")
         norm = self._normalize(tank, type_, payload or {}, note or "")
+        if type_ == "maintenance":
+            label = norm["action"]
         ev = await self.hass.async_add_executor_job(
             self.store.add_event,
             tank_key,
@@ -365,9 +385,12 @@ class AquariumTracker:
         if old is None:
             raise ValueError("Event bulunamadı")
         tank = self.config.tanks.get(old["tank"])
+        label = None
         if payload is not None and tank is not None and old["type"] in USER_EVENT_TYPES:
             payload = self._normalize(tank, old["type"], payload, note if note is not None else old["note"])
-        ev = await self.hass.async_add_executor_job(self.store.update_event, event_id, ts, payload, note)
+            if old["type"] == "maintenance":
+                label = payload["action"]
+        ev = await self.hass.async_add_executor_job(self.store.update_event, event_id, ts, payload, note, label)
         await self._reload_events()
         await self.async_evaluate()
         self._changed()
@@ -512,6 +535,8 @@ class AquariumTracker:
                     for f in tank.fertilizers.values()
                 )
             )
+        elif task.event == "maintenance" and info.get("action_name"):
+            parts.append(f"Bu hafta: {info['action_name']}" if task.schedule.type == "weekly" else info["action_name"])
         elif task.event == "water_change":
             pct = tank.water_change_default_percent
             parts.append(f"Su değişimi zamanı{f' (%{pct:g})' if pct else ''}")

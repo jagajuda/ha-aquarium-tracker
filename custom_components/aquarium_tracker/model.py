@@ -8,7 +8,7 @@ from typing import Any
 
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 MODES = ("cycling", "maintenance")
-USER_EVENT_TYPES = ("dose", "measurement", "water_change", "fertilize", "note")
+USER_EVENT_TYPES = ("dose", "measurement", "water_change", "fertilize", "maintenance", "note")
 SYSTEM_EVENT_TYPES = ("entity", "system")
 SCHEDULE_TYPES = ("interval", "daily", "weekly", "monthly")
 
@@ -56,6 +56,8 @@ class Task:
     early_window_h: float = 6.0
     # None, "cycle" (decided by cycle phase) or explicit parameter list
     params: list[str] | str | None = None
+    # maintenance tasks: actions done in turn (a single `action` becomes a 1-item list)
+    rotate: list[str] | None = None
 
 
 @dataclass
@@ -71,6 +73,12 @@ class Fertilizer:
     name: str
     default_dose: float | None
     unit: str
+
+
+@dataclass
+class MaintenanceAction:
+    key: str
+    name: str
 
 
 @dataclass
@@ -99,6 +107,7 @@ class Tank:
     parameters: list[str]
     stock_solutions: dict[str, StockSolution]
     fertilizers: dict[str, Fertilizer]
+    maintenance_actions: dict[str, MaintenanceAction]
     water_change_default_percent: float | None
     tasks: dict[str, Task]
     watch_entities: list[WatchEntity]
@@ -220,6 +229,16 @@ def parse_config(raw: Any) -> TrackerConfig:
                 unit=str(fraw.get("unit", "mL")),
             )
 
+        actions: dict[str, MaintenanceAction] = {}
+        for akey, araw in (traw.get("maintenance_actions") or {}).items():
+            awhere = f"{where}.maintenance_actions.{akey}"
+            _key(akey, awhere)
+            _require(
+                akey not in USER_EVENT_TYPES + SYSTEM_EVENT_TYPES,
+                f"{awhere}: key {akey!r} clashes with a built-in event type",
+            )
+            actions[akey] = MaintenanceAction(key=akey, name=str((araw or {}).get("name", akey)))
+
         craw = traw.get("cycle") or {}
         cycle = CycleConfig(
             params=list(craw.get("params", ["NH4", "NO2"])),
@@ -247,6 +266,19 @@ def parse_config(raw: Any) -> TrackerConfig:
                 _require(isinstance(params, list), f"{twhere}: params must be a list, 'all' or 'cycle'")
                 for p in params:
                     _require(p in parameters, f"{twhere}.params: unknown parameter {p!r}")
+            rotate = raw_task.get("rotate")
+            if raw_task.get("action") is not None:
+                _require(rotate is None, f"{twhere}: use either action or rotate, not both")
+                rotate = [raw_task["action"]]
+            if event == "maintenance":
+                _require(
+                    isinstance(rotate, list) and rotate,
+                    f"{twhere}: maintenance tasks need action or rotate",
+                )
+                for a in rotate:
+                    _require(a in actions, f"{twhere}: unknown maintenance action {a!r}")
+            else:
+                _require(rotate is None, f"{twhere}: action/rotate only valid for maintenance tasks")
             default_modes = ["cycling"] if params == "cycle" else ["maintenance"]
             modes = list(raw_task.get("modes", default_modes))
             for m in modes:
@@ -264,6 +296,7 @@ def parse_config(raw: Any) -> TrackerConfig:
                 modes=modes,
                 early_window_h=float(raw_task.get("early_window_h", 6)),
                 params=params,
+                rotate=list(rotate) if rotate else None,
             )
 
         watch: list[WatchEntity] = []
@@ -272,8 +305,8 @@ def parse_config(raw: Any) -> TrackerConfig:
             _require(isinstance(wraw, dict) and "entity_id" in wraw, f"{wwhere}: entity_id required")
             label = _key(wraw.get("label", "entity"), wwhere)
             _require(
-                label not in USER_EVENT_TYPES + SYSTEM_EVENT_TYPES,
-                f"{wwhere}: label {label!r} clashes with a built-in event type",
+                label not in USER_EVENT_TYPES + SYSTEM_EVENT_TYPES and label not in actions,
+                f"{wwhere}: label {label!r} clashes with a built-in event type or maintenance action",
             )
             states = wraw.get("states")
             watch.append(
@@ -294,6 +327,7 @@ def parse_config(raw: Any) -> TrackerConfig:
             parameters=list(tank_params),
             stock_solutions=stock,
             fertilizers=ferts,
+            maintenance_actions=actions,
             water_change_default_percent=float(wc_default) if wc_default is not None else None,
             tasks=tasks,
             watch_entities=watch,

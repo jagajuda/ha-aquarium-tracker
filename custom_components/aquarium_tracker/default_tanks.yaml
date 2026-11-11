@@ -58,6 +58,12 @@ tanks:
       trace:  {name: Reeflowers Trace,  default_dose: 3, unit: drops}
       potash: {name: Reeflowers Potash, default_dose: 3, unit: drops}
     water_change_default_percent: null
+    # Each action is its own label on the timeline. Add more freely.
+    maintenance_actions:
+      filter_clean:    {name: Main filter clean}
+      prefilter_clean: {name: Prefilter clean}
+      glass_clean:     {name: Glass clean}
+      trim:            {name: Trimming}
     tasks:
       water_change:
         title: Water change
@@ -71,6 +77,13 @@ tanks:
         schedule: {type: daily, at: "18:00"}
         early_window_h: 6
         reminder: {repeat_count: 2, repeat_interval_min: 60}
+      filter_maintenance:
+        title: Filter maintenance
+        event: maintenance
+        rotate: [filter_clean, prefilter_clean]   # one per week, in turn; starts with the first if no history
+        schedule: {type: weekly, weekdays: [sat], at: "14:00"}
+        early_window_h: 24
+        reminder: {repeat_count: 3, repeat_interval_min: 60}
       monthly_test:
         title: Full test kit
         event: measurement
