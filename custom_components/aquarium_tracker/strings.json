@@ -1,0 +1,20 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Aquarium Tracker",
+        "description": "Select the phone that receives reminders. Tank setup lives in /config/aquarium_tracker/tanks.yaml.",
+        "data": {"notify_service": "Notify service"}
+      }
+    },
+    "abort": {"single_instance_allowed": "Already configured."}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Aquarium Tracker",
+        "data": {"notify_service": "Notify service"}
+      }
+    }
+  }
+}

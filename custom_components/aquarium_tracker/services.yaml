@@ -1,0 +1,39 @@
+reload:
+log_event:
+  fields:
+    tank:
+      required: true
+      example: big_tank
+      selector: {text: {}}
+    type:
+      required: true
+      selector:
+        select:
+          options: [dose, measurement, water_change, fertilize, note]
+    payload:
+      example: '{"values": {"NH4": 0.5, "NO2": 0.1}}'
+      selector: {object: {}}
+    timestamp:
+      selector: {datetime: {}}
+    note:
+      selector: {text: {}}
+set_mode:
+  fields:
+    tank:
+      required: true
+      selector: {text: {}}
+    mode:
+      required: true
+      selector:
+        select:
+          options: [cycling, maintenance]
+snooze:
+  fields:
+    tank:
+      required: true
+      selector: {text: {}}
+    task:
+      required: true
+      selector: {text: {}}
+    minutes:
+      selector: {number: {min: 1, max: 1440}}

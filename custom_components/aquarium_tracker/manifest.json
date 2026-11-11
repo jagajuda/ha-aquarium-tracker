@@ -1,0 +1,11 @@
+{
+  "domain": "aquarium_tracker",
+  "name": "Aquarium Tracker",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "panel_custom", "websocket_api"],
+  "documentation": "https://github.com/",
+  "iot_class": "calculated",
+  "requirements": [],
+  "version": "0.1.0"
+}

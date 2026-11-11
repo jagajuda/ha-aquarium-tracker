@@ -1,0 +1,80 @@
+# Aquarium Tracker configuration
+# Location: /config/aquarium_tracker/tanks.yaml
+# After editing: Aquarium panel -> "Config'i yeniden yükle", or call aquarium_tracker.reload
+# Times must be quoted: "21:00"
+
+settings:
+  snooze_min: 60          # snooze length for the "Ertele" notification button
+  default_temp_c: 25      # used for free-NH3 calculation when no temp is entered
+
+# Global parameter list. Add single tests here later (e.g. K, Mg, SiO2).
+parameters:
+  NH4: {unit: mg/L}
+  NO2: {unit: mg/L}
+  NO3: {unit: mg/L}
+  PO4: {unit: mg/L}
+  Fe:  {unit: mg/L}
+  Cu:  {unit: mg/L}
+  pH:  {unit: ""}
+  KH:  {unit: dKH}
+  GH:  {unit: dGH}
+  temp: {unit: "°C"}
+
+tanks:
+  big_tank:
+    name: Big Tank
+    net_volume_l: 105
+    initial_mode: cycling            # mode is stored in the DB after the first start; change it from the panel
+    stock_solutions:
+      nh4cl:
+        name: NH4Cl stock 10 g/100 mL
+        compound: ammonium_chloride
+        g_per_100ml: 10              # -> 33.7 mg NH4+/mL
+    cycle:
+      params: [NH4, NO2]
+      required_passes: 2             # consecutive passing doses
+      test_window_h: 24              # measurement must be within 24 h after the dose
+      zero_threshold: 0
+      verify_every_days: 1           # cycle task interval once the first pass is recorded
+    tasks:
+      cycle_test:
+        title: Cycle test
+        event: measurement
+        params: cycle                # NH4 only until it reaches 0, then NH4 + NO2
+        schedule: {type: interval, days: 2, at: "21:00"}
+        reminder: {repeat_count: 3, repeat_interval_min: 60}
+    # Future: log HA entity changes onto the timeline
+    # watch_entities:
+    #   - entity_id: light.big_tank_light
+    #     label: light
+    #     name: Light
+    #     states: ["on", "off"]
+
+  nano_tank:
+    name: Nano Tank
+    net_volume_l: 12
+    initial_mode: maintenance
+    fertilizers:
+      trace:  {name: Reeflowers Trace,  default_dose: 3, unit: drops}
+      potash: {name: Reeflowers Potash, default_dose: 3, unit: drops}
+    water_change_default_percent: null
+    tasks:
+      water_change:
+        title: Water change
+        event: water_change
+        schedule: {type: weekly, weekdays: [sat], at: "14:00"}
+        early_window_h: 24           # a change logged from Friday 14:00 onward counts
+        reminder: {repeat_count: 3, repeat_interval_min: 60}
+      fertilize:
+        title: Fertilize
+        event: fertilize
+        schedule: {type: daily, at: "18:00"}
+        early_window_h: 6
+        reminder: {repeat_count: 2, repeat_interval_min: 60}
+      monthly_test:
+        title: Full test kit
+        event: measurement
+        params: [NH4, NO2, NO3, pH, KH, GH, PO4, Fe, Cu]
+        schedule: {type: monthly, weekday: sun, nth: 1, at: "11:00"}
+        early_window_h: 48
+        reminder: {repeat_count: 3, repeat_interval_min: 120}
