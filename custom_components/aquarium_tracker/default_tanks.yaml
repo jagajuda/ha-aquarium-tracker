@@ -58,6 +58,7 @@ tanks:
       trace:  {name: Reeflowers Trace,  default_dose: 3, unit: drops}
       potash: {name: Reeflowers Potash, default_dose: 3, unit: drops}
       power_caps: {name: Dennerle Power Caps, default_dose: 3, unit: tablets, prefill: false}  # prefill: false -> empty in a manual form
+      nitrogen: {name: Seachem Nitrogen, unit: drops}  # dose/schedule not decided yet: loggable, no task
     water_change_default_percent: null
     # Each action is its own label on the timeline. Add more freely.
     maintenance_actions:
