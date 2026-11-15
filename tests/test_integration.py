@@ -141,6 +141,21 @@ async def test_flow(hass, setup, freezer, hass_ws_client, hass_admin_user):
                       payload={"action": "trim"})
     assert not r["success"]
 
+    # root tabs and daily drops don't complete each other
+    def nano_task(snap, key):
+        return [x for x in snap["tanks"][1]["tasks"] if x["task"] == key][0]
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    root_due = nano_task(r["result"], "root_tabs")["due"]
+    fert_due = nano_task(r["result"], "fertilize")["due"]
+    assert root_due.startswith("2026-11-29T11:00"), root_due  # 14:00 Istanbul
+    r = await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="fertilize",
+                      payload={"doses": {"power_caps": "3"}})
+    assert r["success"], r
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    assert nano_task(r["result"], "fertilize")["due"] == fert_due
+    assert nano_task(r["result"], "root_tabs")["due"] != root_due
+    assert nano_task(r["result"], "root_tabs")["products"] == ["power_caps"]
+
     # service
     await hass.services.async_call(DOMAIN, "log_event", {"tank": "nano_tank", "type": "note", "note": "hello"}, blocking=True)
 

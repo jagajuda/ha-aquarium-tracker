@@ -57,6 +57,7 @@ tanks:
     fertilizers:
       trace:  {name: Reeflowers Trace,  default_dose: 3, unit: drops}
       potash: {name: Reeflowers Potash, default_dose: 3, unit: drops}
+      power_caps: {name: Dennerle Power Caps, default_dose: 3, unit: tablets, prefill: false}  # prefill: false -> empty in a manual form
     water_change_default_percent: null
     # Each action is its own label on the timeline. Add more freely.
     maintenance_actions:
@@ -74,9 +75,17 @@ tanks:
       fertilize:
         title: Fertilize
         event: fertilize
+        products: [trace, potash]    # only these complete the daily task (root tabs don't)
         schedule: {type: daily, at: "18:00"}
         early_window_h: 6
         reminder: {repeat_count: 2, repeat_interval_min: 60}
+      root_tabs:
+        title: Root tabs
+        event: fertilize
+        products: [power_caps]
+        # every 3 calendar months after the last logged dose; first one on `start`
+        schedule: {type: interval, months: 3, at: "14:00", start: "2026-11-29"}
+        reminder: {repeat_count: 3, repeat_interval_min: 60}
       filter_maintenance:
         title: Filter maintenance
         event: maintenance

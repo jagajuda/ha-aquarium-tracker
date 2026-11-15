@@ -210,7 +210,12 @@ class AquariumTrackerPanel extends HTMLElement {
       if (task?.params) f.params = [...task.params];
       else if (t?.mode === "cycling" && t.cycle) f.params = [...t.cycle.params];
     }
-    if (type === "fertilize") for (const fz of t?.fertilizers || []) f.doses[fz.key] = fz.default_dose ?? "";
+    if (type === "fertilize")
+      for (const fz of t?.fertilizers || []) {
+        // opened from a task: prefill only that task's products; manual: products marked prefill
+        const want = task?.products ? task.products.includes(fz.key) : fz.prefill !== false;
+        f.doses[fz.key] = want ? fz.default_dose ?? "" : "";
+      }
     return f;
   }
   _openForm(tankKey, taskKey) {

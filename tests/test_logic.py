@@ -158,3 +158,31 @@ def test_rotation():
     # unrelated actions (glass_clean) never affect rotation
     extra = done + [(t("2026-11-20T10:00"), "glass_clean")]
     assert rotation_due(s, t("2026-11-21T15:00"), TZ, extra, rot, anchor, 24)[1] == "prefilter_clean"
+
+
+def test_interval_months_and_start():
+    from aqt.logic import add_months
+    from datetime import date
+    task = CFG.tanks["nano_tank"].tasks["root_tabs"]
+    s = task.schedule
+    assert s.months == 3 and s.start == date(2026, 11, 29) and task.products == ["power_caps"]
+    anchor = t("2026-11-15T10:00")
+    # nothing logged -> start date at 14:00
+    assert compute_due(s, t("2026-11-15T10:00"), TZ, [], anchor, 6) == t("2026-11-29T14:00")
+    # logged on 29 Nov -> 28 Feb (clamped), then 28 May
+    assert compute_due(s, t("2026-11-29T15:00"), TZ, [t("2026-11-29T14:10")], anchor, 6) == t("2027-02-28T14:00")
+    assert add_months(date(2027, 2, 28), 3) == date(2027, 5, 28)
+    assert add_months(date(2026, 12, 31), 2) == date(2027, 2, 28)
+    # logged late (5 Dec) -> next counts from the actual date
+    assert compute_due(s, t("2026-12-05T15:00"), TZ, [t("2026-12-05T12:00")], anchor, 6) == t("2027-03-05T14:00")
+
+
+def test_schedule_validation():
+    raw = yaml.safe_load(open(ROOT / "aquarium_tracker" / "tanks.yaml"))
+    raw["tanks"]["nano_tank"]["tasks"]["fertilize"]["schedule"]["months"] = 2  # daily + months
+    with pytest.raises(ConfigError):
+        parse_config(raw)
+    raw = yaml.safe_load(open(ROOT / "aquarium_tracker" / "tanks.yaml"))
+    raw["tanks"]["nano_tank"]["tasks"]["root_tabs"]["products"] = ["nope"]
+    with pytest.raises(ConfigError):
+        parse_config(raw)
