@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, tzinfo
 from typing import Any
 
-from .model import CycleConfig, Schedule
+from .model import CycleConfig, DosingProgram, Schedule
 
 # ---------------------------------------------------------------- chemistry
 
@@ -244,3 +245,187 @@ def evaluate_cycle(events: list[dict[str, Any]], cfg: CycleConfig, now: datetime
         phase = "start"
     params = ["NH4"] if phase in ("start", "ammonia") else list(cfg.params)
     return CycleStatus(phase, passes, cfg.required_passes, params, results)
+
+
+# ---------------------------------------------------------------- dosing programme
+
+def _round_half_up(x: float) -> int:
+    return math.floor(x + 0.5)
+
+
+@dataclass
+class ProgramTask:
+    kind: str  # measure | dose
+    step: str  # baseline | test_dose | response | ramp | maintenance | weekly
+    due: datetime
+    drops: int | None = None
+
+
+@dataclass
+class ProgramStatus:
+    phase: str  # idle | baseline | test_dose | response | ramp | maintenance | stable
+    tasks: list[ProgramTask] = field(default_factory=list)
+    baseline: float | None = None
+    response: float | None = None
+    k: float | None = None
+    k_source: str | None = None  # measured | label
+    k_reason: str | None = None  # below_resolution | deviates
+    k_measured: float | None = None
+    k_label: float | None = None
+    required_ml: float | None = None
+    remaining_ml: float | None = None
+    rate_ml_per_day: float | None = None
+    in_band_count: int = 0
+    adjustments: list[dict] = field(default_factory=list)
+
+    def as_dict(self, ml_per_drop: float) -> dict:
+        d = {k: v for k, v in self.__dict__.items() if k != "tasks"}
+        d["tasks"] = [
+            {"kind": t.kind, "step": t.step, "due": t.due.isoformat(), "drops": t.drops} for t in self.tasks
+        ]
+        if self.rate_ml_per_day is not None:
+            d["rate_drops_per_day"] = round(self.rate_ml_per_day / ml_per_drop, 2)
+        if self.remaining_ml is not None:
+            d["remaining_drops"] = _round_half_up(self.remaining_ml / ml_per_drop)
+        return d
+
+
+def evaluate_program(
+    events: list[dict],
+    pc: DosingProgram,
+    volume_l: float,
+    start: datetime | None,
+    now: datetime,
+    tz: tzinfo,
+) -> ProgramStatus:
+    """Derive a dosing programme's state from the event log.
+
+    baseline -> test dose -> response (after response_h) -> capped ramp to target
+    -> maintenance (daily dose, scheduled measurement, banded dose factor)
+    -> stable after `stable_count` in-band readings in a row (scheduled measurement
+    stops; any later out-of-band reading resets the counter).
+    """
+    st = ProgramStatus(phase="idle")
+    if start is None:
+        return st
+    mpd = pc.ml_per_drop
+    st.k_label = pc.label_per_ml_per_l / volume_l
+    since = start - timedelta(hours=2)
+
+    def drops_of(e: dict) -> float:
+        v = ((e.get("payload") or {}).get("doses") or {}).get(pc.product)
+        return float(v) if v not in (None, "") else 0.0
+
+    events = sorted(events, key=lambda e: e["ts"])
+    doses = [(e["ts"], drops_of(e)) for e in events
+             if e["type"] == "fertilize" and e["ts"] >= since and drops_of(e) > 0]
+    meas = []
+    for e in events:
+        if e["type"] != "measurement" or e["ts"] < since:
+            continue
+        v = ((e.get("payload") or {}).get("values") or {}).get(pc.parameter)
+        if v is not None:
+            meas.append((e["ts"], float(v)))
+
+    # 1. baseline
+    if not meas:
+        st.phase = "baseline"
+        st.tasks.append(ProgramTask("measure", "baseline", start))
+        return st
+    m0 = meas[0]
+    st.baseline = m0[1]
+
+    # 2. test dose
+    after = [d for d in doses if d[0] >= m0[0]]
+    if not after:
+        st.phase = "test_dose"
+        st.tasks.append(ProgramTask("dose", "test_dose", m0[0], _round_half_up(pc.test_dose_ml / mpd)))
+        return st
+    d0 = after[0]
+    test_ml = d0[1] * mpd
+
+    # 3. response
+    resp_from = d0[0] + timedelta(hours=pc.response_h - pc.response_tolerance_h)
+    later = [m for m in meas if m[0] >= resp_from]
+    if not later:
+        st.phase = "response"
+        st.tasks.append(ProgramTask("measure", "response", d0[0] + timedelta(hours=pc.response_h)))
+        return st
+    m1 = later[0]
+    st.response = m1[1]
+    delta = m1[1] - m0[1]
+    st.k_measured = delta / test_ml if test_ml > 0 else None
+    if delta < pc.kit_resolution or st.k_measured is None:
+        st.k, st.k_source, st.k_reason = st.k_label, "label", "below_resolution"
+    elif abs(st.k_measured - st.k_label) / st.k_label > pc.k_tolerance:
+        st.k, st.k_source, st.k_reason = st.k_label, "label", "deviates"
+    else:
+        st.k, st.k_source = st.k_measured, "measured"
+
+    # 4. ramp to target, capped per day
+    st.required_ml = max(0.0, (pc.target - m1[1]) / st.k)
+    ramp = [d for d in doses if d[0] > m1[0]]
+    given, ramp_end = 0.0, None
+    if st.required_ml < mpd / 2:
+        ramp_end = m1[0]
+    else:
+        for ts, dr in ramp:
+            given += dr * mpd
+            if given >= st.required_ml - mpd / 2:
+                ramp_end = ts
+                break
+    if ramp_end is None:
+        st.phase = "ramp"
+        st.remaining_ml = st.required_ml - given
+        due = compute_due(pc.dose_schedule, now, tz, [d[0] for d in ramp], m1[0], pc.dose_early_h)
+        drops = max(1, _round_half_up(min(pc.ramp_max_ml_per_day, st.remaining_ml) / mpd))
+        st.tasks.append(ProgramTask("dose", "ramp", due, drops))
+        return st
+
+    # 5. maintenance
+    st.remaining_ml = 0.0
+    maint_start = ramp_end
+    mm = [m for m in meas if m[0] > maint_start]
+    rate = pc.maintenance_start_ml_per_day
+    for ts, v in mm:
+        band = next(b for b in pc.bands if b.matches(v))
+        rate = min(rate * band.factor, pc.ramp_max_ml_per_day)
+        st.in_band_count = st.in_band_count + 1 if pc.stable_low <= v <= pc.stable_high else 0
+        st.adjustments.append({"ts": ts.isoformat(), "value": v, "factor": band.factor,
+                               "rate_ml_per_day": round(rate, 4), "in_band_count": st.in_band_count})
+    st.rate_ml_per_day = rate
+    stable = st.in_band_count >= pc.stable_count
+    st.phase = "stable" if stable else "maintenance"
+
+    def rate_at(t: datetime) -> float:
+        r = pc.maintenance_start_ml_per_day
+        for a in st.adjustments:
+            if datetime.fromisoformat(a["ts"]) < t:
+                r = a["rate_ml_per_day"]
+        return r
+
+    anchor = maint_start + timedelta(hours=pc.dose_early_h)
+    maint_doses = [d[0] for d in doses if d[0] > maint_start]
+    due = compute_due(pc.dose_schedule, now, tz, maint_doses, anchor, pc.dose_early_h)
+
+    # Drops per slot: cumulative planned volume rounded, so fractional drops
+    # carry over (1.5/day -> 1, 2, 1, 2 ...). Missed days are not made up.
+    def planned(slot: datetime) -> int:
+        cum = prev = 0.0
+        s = next_slot(pc.dose_schedule, anchor - timedelta(seconds=1), tz)
+        while s is not None and s <= slot:
+            prev = cum
+            cum += rate_at(s) / mpd
+            s = next_slot(pc.dose_schedule, s, tz)
+        return _round_half_up(cum) - _round_half_up(prev)
+
+    for _ in range(60):  # skip zero-drop days
+        n = planned(due)
+        if n > 0:
+            break
+        due = next_slot(pc.dose_schedule, due, tz)
+    st.tasks.append(ProgramTask("dose", "maintenance", due, n))
+    if not stable:
+        mdue = compute_due(pc.measure_schedule, now, tz, [m[0] for m in mm], maint_start, pc.measure_early_h)
+        st.tasks.append(ProgramTask("measure", "weekly", mdue))
+    return st

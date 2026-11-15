@@ -55,6 +55,17 @@ If the YAML is invalid the integration fails to load and the error is shown in t
   `action`, or `rotate` through several: the action requested for an occurrence is the one after the last
   rotation action logged before that occurrence's window, and only that action completes it — a skipped week
   never shifts the order. Actions without a task are simply logged.
+- **Dosing programme** (`dosing_programs`, e.g. nitrogen): measure-driven dosing started from the panel with a date
+  picker. Steps: baseline reading → test dose → response reading after `response_h` → raise to `target`, split
+  into daily doses capped at `ramp_max_ml_per_day` → maintenance: daily dose plus a scheduled reading; each reading
+  multiplies the daily dose by its band factor → **stable** after `stable_count` in-band readings in a row (the
+  scheduled reading stops; the monthly full test keeps applying the bands, and an out-of-band reading brings the
+  scheduled reading back).
+  - k (rise per mL) comes from the label (`label_per_ml_per_l` / tank volume); the measured test-dose rise replaces
+    it only if it is above `kit_resolution` and within `k_tolerance` of the label value.
+  - Doses are shown in drops (`ml_per_drop`; calibrate by weighing 40 drops of the product). Fractional daily doses
+    carry over (1.4/day → 1, 1, 2, 1, 2 …); missed days are not made up.
+  - Restart or stop from the panel; both are logged on the timeline.
 - **Mode**: `cycling` or `maintenance`, per tank. Tasks run only in their `modes`. Mode is stored in the DB;
   `initial_mode` is only used on first start. Switch from the panel.
 - **Cycle**: a dose passes if a measurement within `test_window_h` after it (and before the next dose) shows

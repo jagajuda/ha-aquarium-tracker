@@ -23,7 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry, async_add_entities: AddE
         for param in tank.parameters:
             entities.append(ParameterSensor(tracker, tank, param))
         entities.append(StatusSensor(tracker, tank))
-        if tank.tasks:
+        if tank.tasks or tank.programs:
             entities.append(NextTaskSensor(tracker, tank))
     async_add_entities(entities)
 
@@ -113,9 +113,7 @@ class NextTaskSensor(_Base):
 
     def _update(self) -> None:
         now = dt_util.utcnow()
-        infos = [
-            self._tracker.task_info(self._tank, t, now) for t in self._tank.tasks.values()
-        ]
+        infos = self._tracker.tank_task_infos(self._tank, now)
         infos = [i for i in infos if i["active"] and i["due"]]
         infos.sort(key=lambda i: i["due"])
         if not infos:

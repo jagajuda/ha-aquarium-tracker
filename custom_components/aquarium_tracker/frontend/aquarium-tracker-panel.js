@@ -25,6 +25,17 @@ const PARAM_COLORS = {
   Cu: "#17becf", pH: "#e377c2", KH: "#393b79", GH: "#7f7f7f", temp: "#637939",
 };
 const MARKER_TYPES = ["dose", "water_change", "fertilize"];
+const UNIT_TR = { drops: "damla", tablets: "tablet" };
+const unitTr = (u) => UNIT_TR[u] || u || "";
+const PROG_PHASES = {
+  idle: "Başlatılmadı",
+  baseline: "Başlangıç ölçümü",
+  test_dose: "Test dozu",
+  response: "Yanıt ölçümü",
+  ramp: "Hedefe çıkış",
+  maintenance: "Bakım",
+  stable: "Stabil",
+};
 const MARKER_SHORT = { dose: "Doz", water_change: "SD", fertilize: "G" };
 
 const esc = (v) =>
@@ -210,7 +221,9 @@ class AquariumTrackerPanel extends HTMLElement {
       if (task?.params) f.params = [...task.params];
       else if (t?.mode === "cycling" && t.cycle) f.params = [...t.cycle.params];
     }
-    if (type === "fertilize")
+    if (type === "fertilize" && task?.doses)
+      for (const fz of t?.fertilizers || []) f.doses[fz.key] = task.doses[fz.key] ?? "";
+    else if (type === "fertilize")
       for (const fz of t?.fertilizers || []) {
         // opened from a task: prefill only that task's products; manual: products marked prefill
         const want = task?.products ? task.products.includes(fz.key) : fz.prefill !== false;
@@ -394,6 +407,22 @@ class AquariumTrackerPanel extends HTMLElement {
           this._ws({ type: "aquarium_tracker/set_mode", tank: v, mode: w }, "Mod değişti");
         return;
       }
+      case "pstart": {
+        const t = this.tank();
+        const inp = this.shadowRoot.getElementById(`pstart_${v}`);
+        const p = t.programs.find((x) => x.key === v);
+        const when = inp && inp.value ? new Date(inp.value) : new Date();
+        const restart = p.status.phase !== "idle";
+        if (confirm(`${p.title} programı ${fmtDT(when.toISOString())} itibarıyla ${restart ? "yeniden " : ""}başlatılsın mı?${restart ? " Mevcut ilerleme sıfırlanır." : ""}`))
+          this._ws({ type: "aquarium_tracker/program", tank: t.key, program: v, action: "start", start: when.toISOString() }, "Program başlatıldı");
+        return;
+      }
+      case "pstop": {
+        const t = this.tank();
+        if (confirm("Program durdurulsun mu? Kayıtlar silinmez."))
+          this._ws({ type: "aquarium_tracker/program", tank: t.key, program: v, action: "stop" }, "Program durduruldu");
+        return;
+      }
       case "reload":
         this._ws({ type: "aquarium_tracker/reload" }, "Config yeniden yüklendi");
         return;
@@ -545,6 +574,7 @@ class AquariumTrackerPanel extends HTMLElement {
         ${cyc}
         ${latest ? `<div class="vals">${latest}</div>` : `<div class="muted">Henüz ölçüm yok</div>`}
         ${next ? `<div class="sub">Görevler</div>${next}` : ""}
+        ${(t.programs || []).map((p) => this._renderProgram(t, p)).join("")}
         <div class="row end"><button class="btn ghost" data-act="mode" data-v="${t.key}" data-w="${otherMode}">${MODE_NAMES[otherMode]} moduna geç</button></div>
       </div>
       <div class="card">
@@ -558,6 +588,49 @@ class AquariumTrackerPanel extends HTMLElement {
         <div class="sub" style="margin-top:0">Listede göster</div><div class="chips">${listChips}</div>
         ${this._renderTimeline(listed)}
       </div>`;
+  }
+
+  _renderProgram(t, p) {
+    const st = p.status;
+    const fert = t.fertilizers.find((f) => f.key === p.product);
+    const u = unitTr(fert?.unit);
+    const n = (v, d = 2) => fmtNum(v === null || v === undefined ? v : +Number(v).toFixed(d));
+    const rows = [];
+    if (st.baseline !== null && st.baseline !== undefined) rows.push(`Başlangıç ${esc(p.parameter)}: <b>${n(st.baseline)}</b>`);
+    if (st.response !== null && st.response !== undefined) rows.push(`Test dozu sonrası: <b>${n(st.response)}</b>`);
+    if (st.k) {
+      const why =
+        st.k_source === "measured"
+          ? "ölçülen"
+          : st.k_reason === "deviates"
+            ? `etiket — ölçülen ${n(st.k_measured)} etiketten çok farklı`
+            : "etiket — ölçülen artış kit hassasiyetinin altında";
+      rows.push(`k = <b>${n(st.k)}</b> mg/L/mL <span class="muted">(${why})</span>`);
+    }
+    if (st.phase === "ramp") rows.push(`Hedef ${n(p.target)} · kalan <b>${st.remaining_drops} ${u}</b>`);
+    if (st.phase === "maintenance" || st.phase === "stable") {
+      rows.push(`Günlük doz: <b>${n(st.rate_drops_per_day, 1)} ${u}</b> · bant ${n(p.stable_band[0])}–${n(p.stable_band[1])} · stabil ${st.in_band_count}/${p.stable_count}`);
+      const adj = (st.adjustments || []).slice(-3).reverse();
+      if (adj.length)
+        rows.push(
+          adj
+            .map((a) => `<span class="muted small">${fmtDT(a.ts)} · ${esc(p.parameter)} ${n(a.value)} → ×${n(a.factor)}</span>`)
+            .join("<br>")
+        );
+    }
+    const def = new Date();
+    def.setHours(18, 0, 0, 0);
+    const running = st.phase !== "idle";
+    const controls = `<div class="row end">
+        <input type="datetime-local" class="dt" id="pstart_${p.key}" value="${toLocalInput(def)}">
+        <button class="btn ${running ? "ghost" : ""} sm" data-act="pstart" data-v="${p.key}">${running ? "Yeniden başlat" : "Programı başlat"}</button>
+        ${running ? `<button class="btn danger sm" data-act="pstop" data-v="${p.key}">Durdur</button>` : ""}
+      </div>`;
+    return `<div class="sub">Program · ${esc(p.title)}</div>
+      <div class="row"><span class="badge" style="background:${this.labelColor("fertilize")}">${PROG_PHASES[st.phase] || st.phase}</span>
+        ${p.start ? `<span class="muted small">başlangıç ${fmtDT(p.start)}</span>` : ""}</div>
+      ${rows.map((r) => `<div class="prow">${r}</div>`).join("")}
+      ${controls}`;
   }
 
   // Chart selection per tank and mode, remembered on this device
@@ -720,13 +793,15 @@ class AquariumTrackerPanel extends HTMLElement {
         return "Yapıldı";
       case "fertilize":
         return Object.entries(p.doses || {})
-          .map(([k, v]) => `${t?.fertilizers.find((f) => f.key === k)?.name || k} ${fmtNum(v)} ${p.units?.[k] || ""}`)
+          .map(([k, v]) => `${t?.fertilizers.find((f) => f.key === k)?.name || k} ${fmtNum(v)} ${unitTr(p.units?.[k])}`)
           .join(" · ");
       case "entity":
         return `${p.name || p.entity_id}: ${p.from ?? "?"} → ${p.to}`;
       case "system":
         if (p.kind === "mode") return `Mod: ${MODE_NAMES[p.from] || p.from} → ${MODE_NAMES[p.to] || p.to}`;
         if (p.kind === "cycle_complete") return `Cycle tamamlandı (${p.passes} ardışık doz)`;
+        if (p.kind === "program_start") return `${p.title || p.program} programı başladı (${fmtDT(p.start)})`;
+        if (p.kind === "program_stop") return `${p.title || p.program} programı durduruldu`;
         return p.kind || "";
       default:
         return "";
@@ -809,7 +884,7 @@ class AquariumTrackerPanel extends HTMLElement {
     } else if (f.type === "fertilize") {
       fields = `<div class="grid2">${t.fertilizers
         .map(
-          (fz) => `<label class="fld"><span>${esc(fz.name)} <span class="muted">${esc(fz.unit)}</span></span>
+          (fz) => `<label class="fld"><span>${esc(fz.name)} <span class="muted">${esc(unitTr(fz.unit))}</span></span>
           <input type="text" inputmode="decimal" data-f="dose" data-p="${fz.key}" value="${esc(f.doses[fz.key] ?? "")}"></label>`
         )
         .join("")}</div>`;
@@ -842,7 +917,13 @@ class AquariumTrackerPanel extends HTMLElement {
   _taskRow(x, showTank) {
     const t = this.tank(x.tank);
     const st = x.status;
-    const params = x.params?.length ? ` · ${x.params.join(", ")}` : x.action_name ? ` · ${x.action_name}` : "";
+    const params = x.drops
+      ? ` · ${x.drops} ${unitTr(x.unit)}`
+      : x.params?.length
+        ? ` · ${x.params.join(", ")}`
+        : x.action_name
+          ? ` · ${x.action_name}`
+          : "";
     return `<div class="task ${st}">
       <div class="tinfo"><b>${showTank ? esc(t.name) + " · " : ""}${esc(x.title)}</b>
         <div class="muted small">${x.due ? `${fmtDT(x.due)} (${until(x.due)})` : ""}${esc(params)}</div></div>
@@ -930,6 +1011,9 @@ const CSS = `
 .sdot { position:absolute; top:50%; width:12px; height:12px; border-radius:50%; transform:translate(-50%,-50%);
   background:var(--c); border:2px solid var(--card-background-color); cursor:pointer; box-sizing:border-box; }
 .saxis { display:flex; justify-content:space-between; margin:2px 8px 0 104px; font-size:11px; color:var(--secondary-text-color); }
+.prow { font-size:13px; margin:4px 0; }
+.dt { font-size:14px; padding:6px; border-radius:8px; border:1px solid var(--divider-color);
+  background:var(--secondary-background-color); color:var(--primary-text-color); font-family:inherit; }
 .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#323232; color:#fff; padding:10px 18px;
   border-radius:8px; font-size:14px; z-index:10; } .toast.err { background:var(--error-color); }
 `;
