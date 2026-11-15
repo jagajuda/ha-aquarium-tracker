@@ -17,8 +17,17 @@ from homeassistant.helpers.event import (
 from homeassistant.util import dt as dt_util
 
 from .const import NOTIFY_ACTION_PREFIX, PANEL_URL_PATH, SIGNAL_UPDATED, TICK_SECONDS
-from .logic import CycleStatus, compute_due, dose_nh4_mg_l, evaluate_cycle, free_nh3_mg_l, rotation_due
-from .model import MODES, USER_EVENT_TYPES, Tank, Task, TrackerConfig
+from .logic import (
+    CycleStatus,
+    ProgramStatus,
+    compute_due,
+    dose_nh4_mg_l,
+    evaluate_cycle,
+    evaluate_program,
+    free_nh3_mg_l,
+    rotation_due,
+)
+from .model import MODES, USER_EVENT_TYPES, DosingProgram, Reminder, Tank, Task, TrackerConfig
 from .store import EventStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,6 +56,20 @@ def _num(value: Any, what: str) -> float:
 
 def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
+
+
+UNIT_TR = {"drops": "damla", "tablets": "tablet"}
+
+
+def _unit(u: str) -> str:
+    return UNIT_TR.get(u, u)
+
+
+PROGRAM_STEP_TEXT = {
+    "baseline": "başlangıç değeri",
+    "response": "test dozundan {h:g} saat sonra",
+    "weekly": "su değişiminden önce",
+}
 
 
 def _fmt_local(ts: datetime) -> str:
@@ -209,13 +232,7 @@ class AquariumTracker:
             interval_days = tank.cycle.verify_every_days if (cs and cs.phase == "verify") else None
             due = compute_due(task.schedule, now, tz, times, anchor, task.early_window_h, interval_days)
         info["due"] = due.astimezone(dt_util.UTC).isoformat()
-        snoozed = st.get("snoozed_until")
-        if now < due:
-            info["status"] = "upcoming"
-        elif snoozed and now < _parse(snoozed) and st.get("due") == info["due"]:
-            info["status"] = "snoozed"
-        else:
-            info["status"] = "due"
+        info["status"] = self._status(st, info["due"], now)
         return info
 
     @staticmethod
@@ -225,13 +242,104 @@ class AquariumTracker:
         doses = (ev.get("payload") or {}).get("doses") or {}
         return any(p in doses for p in task.products)
 
+    @staticmethod
+    def _status(st: dict[str, Any], due_iso: str, now: datetime) -> str:
+        due = _parse(due_iso)
+        snoozed = st.get("snoozed_until")
+        if now < due:
+            return "upcoming"
+        if snoozed and now < _parse(snoozed) and st.get("due") == due_iso:
+            return "snoozed"
+        return "due"
+
+    # ------------------------------------------------------------ dosing programmes
+
+    def program_start(self, tank_key: str, prog_key: str) -> datetime | None:
+        """Start time of the running programme (latest start/stop system event wins)."""
+        start = None
+        for e in self._events:
+            p = e["payload"]
+            if e["tank"] != tank_key or e["type"] != "system" or p.get("program") != prog_key:
+                continue
+            if p.get("kind") == "program_start":
+                start = _parse(p["start"])
+            elif p.get("kind") == "program_stop":
+                start = None
+        return start
+
+    def program_status(self, tank: Tank, prog: DosingProgram, now: datetime | None = None) -> ProgramStatus:
+        return evaluate_program(
+            self._logic_events(tank.key),
+            prog,
+            tank.net_volume_l,
+            self.program_start(tank.key, prog.key),
+            now or dt_util.utcnow(),
+            dt_util.get_default_time_zone(),
+        )
+
+    def program_task_infos(self, tank: Tank, prog: DosingProgram, now: datetime,
+                           ps: ProgramStatus | None = None) -> list[dict[str, Any]]:
+        ps = ps or self.program_status(tank, prog, now)
+        fert = tank.fertilizers[prog.product]
+        out = []
+        for kind in ("measure", "dose"):
+            key = f"{prog.key}.{kind}"
+            task = next((t for t in ps.tasks if t.kind == kind), None)
+            st = self._task_state(tank.key, key)
+            info: dict[str, Any] = {
+                "tank": tank.key,
+                "task": key,
+                "title": f"{prog.title}: {prog.parameter} ölç" if kind == "measure" else f"{prog.title}: doz",
+                "event": "measurement" if kind == "measure" else "fertilize",
+                "params": [prog.parameter] if kind == "measure" else None,
+                "products": [prog.product] if kind == "dose" else None,
+                "doses": {prog.product: task.drops} if (task and kind == "dose") else None,
+                "drops": task.drops if task else None,
+                "unit": fert.unit,
+                "program": prog.key,
+                "step": task.step if task else None,
+                "active": task is not None,
+                "due": None,
+                "status": "inactive",
+                "snoozed_until": st.get("snoozed_until"),
+                "cycle_phase": None,
+                "action": None,
+                "action_name": None,
+            }
+            if task:
+                info["due"] = task.due.astimezone(dt_util.UTC).isoformat()
+                info["status"] = self._status(st, info["due"], now)
+            out.append(info)
+        return out
+
+    def _program_message(self, tank: Tank, prog: DosingProgram, info: dict[str, Any],
+                         ps: ProgramStatus, due: datetime, now: datetime) -> tuple[str, str]:
+        fert = tank.fertilizers[prog.product]
+        title = f"{tank.name}: {prog.title}"
+        step = info["step"]
+        if info["event"] == "measurement":
+            text = f"{prog.parameter} ölç ({PROGRAM_STEP_TEXT[step].format(h=prog.response_h)})"
+            if step == "baseline":
+                text += f". Sonra {round(prog.test_dose_ml / prog.ml_per_drop)} {_unit(fert.unit)} test dozu."
+            if step == "weekly":
+                text += f" · stabil sayaç {ps.in_band_count}/{prog.stable_count}"
+        else:
+            text = f"{'Test dozu' if step == 'test_dose' else 'Bugün'}: {info['drops']} {_unit(fert.unit)} {fert.name}"
+            if step == "ramp" and ps.remaining_ml is not None:
+                text += f" (hedefe çıkış, kalan {round(ps.remaining_ml / prog.ml_per_drop)} {_unit(fert.unit)})"
+        if now - due > timedelta(minutes=30):
+            text += f" — gecikti, planlanan {_fmt_local(due)}"
+        return title, text
+
+    def tank_task_infos(self, tank: Tank, now: datetime) -> list[dict[str, Any]]:
+        infos = [self.task_info(tank, t, now) for t in tank.tasks.values()]
+        for prog in tank.programs.values():
+            infos.extend(self.program_task_infos(tank, prog, now))
+        return infos
+
     def all_tasks(self) -> list[dict[str, Any]]:
         now = dt_util.utcnow()
-        return [
-            self.task_info(tank, task, now)
-            for tank in self.config.tanks.values()
-            for task in tank.tasks.values()
-        ]
+        return [i for tank in self.config.tanks.values() for i in self.tank_task_infos(tank, now)]
 
     def labels(self) -> list[dict[str, str]]:
         out = [{"key": k, "name": LABEL_NAMES[k]} for k in (*USER_EVENT_TYPES, "system")]
@@ -275,7 +383,22 @@ class AquariumTracker:
                     "default_temp_c": tank.default_temp_c,
                     "cycle": cs.as_dict() if cs else None,
                     "latest": self.latest_values(tank.key),
-                    "tasks": [self.task_info(tank, t, now) for t in tank.tasks.values()],
+                    "tasks": self.tank_task_infos(tank, now),
+                    "programs": [
+                        {
+                            "key": p.key,
+                            "title": p.title,
+                            "product": p.product,
+                            "parameter": p.parameter,
+                            "target": p.target,
+                            "stable_band": [p.stable_low, p.stable_high],
+                            "stable_count": p.stable_count,
+                            "ml_per_drop": p.ml_per_drop,
+                            "start": (s.isoformat() if (s := self.program_start(tank.key, p.key)) else None),
+                            "status": self.program_status(tank, p, now).as_dict(p.ml_per_drop),
+                        }
+                        for p in tank.programs.values()
+                    ],
                 }
             )
         return {
@@ -453,12 +576,41 @@ class AquariumTracker:
         self._changed()
 
     async def async_snooze(self, tank_key: str, task_key: str, minutes: int | None = None) -> None:
-        if tank_key not in self.config.tanks or task_key not in self.config.tanks[tank_key].tasks:
+        tank = self.config.tanks.get(tank_key)
+        valid = tank is not None and (
+            task_key in tank.tasks
+            or any(task_key in (f"{p}.measure", f"{p}.dose") for p in tank.programs)
+        )
+        if not valid:
             raise ValueError("Geçersiz görev")
         st = self._task_state(tank_key, task_key)
         until = dt_util.utcnow() + timedelta(minutes=minutes or self.config.snooze_min)
         st["snoozed_until"] = until.isoformat()
         await self._save_task_state(tank_key, task_key, st)
+        self._changed()
+
+    async def async_program(self, tank_key: str, prog_key: str, action: str, start: datetime | None = None) -> None:
+        tank = self.config.tanks.get(tank_key)
+        if tank is None or prog_key not in tank.programs or action not in ("start", "stop"):
+            raise ValueError("Geçersiz program")
+        now = dt_util.utcnow()
+        payload: dict[str, Any] = {"kind": f"program_{action}", "program": prog_key,
+                                   "title": tank.programs[prog_key].title}
+        if action == "start":
+            payload["start"] = (start or now).astimezone(dt_util.UTC).isoformat()
+        elif self.program_start(tank_key, prog_key) is None:
+            raise ValueError("Program zaten çalışmıyor")
+        for kind in ("measure", "dose"):
+            key = f"{prog_key}.{kind}"
+            st = self._task_state(tank_key, key)
+            if st.get("sent"):
+                await self._clear(f"aqt_{tank_key}_{key}")
+            await self._save_task_state(tank_key, key, {})
+        await self.hass.async_add_executor_job(
+            self.store.add_event, tank_key, now, "system", "system", payload, "", "system"
+        )
+        await self._reload_events()
+        await self.async_evaluate()
         self._changed()
 
     # ------------------------------------------------------------ evaluation
@@ -478,6 +630,16 @@ class AquariumTracker:
                         await self._evaluate_task(tank, task, now)
                     except Exception:  # noqa: BLE001 - keep the loop alive
                         _LOGGER.exception("Task evaluation failed for %s/%s", tank.key, task.key)
+                for prog in tank.programs.values():
+                    try:
+                        ps = self.program_status(tank, prog, now)
+                        for info in self.program_task_infos(tank, prog, now, ps):
+                            await self._evaluate_unit(
+                                tank, info, prog.reminder,
+                                lambda i, d, n, p=prog, s=ps: self._program_message(tank, p, i, s, d, n), now,
+                            )
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.exception("Programme evaluation failed for %s/%s", tank.key, prog.key)
 
     async def _check_cycle_complete(self, tank: Tank, now: datetime) -> None:
         cs = self.cycle_status(tank, now)
@@ -504,19 +666,27 @@ class AquariumTracker:
 
     async def _evaluate_task(self, tank: Tank, task: Task, now: datetime) -> None:
         info = self.task_info(tank, task, now)
-        st = self._task_state(tank.key, task.key)
-        tag = f"aqt_{tank.key}_{task.key}"
+        await self._evaluate_unit(
+            tank, info, task.reminder,
+            lambda i, d, n: self._task_message(tank, task, i, d, n), now,
+        )
+
+    async def _evaluate_unit(self, tank: Tank, info: dict[str, Any], reminder: Reminder, message, now: datetime) -> None:
+        """Reminder state machine shared by config tasks and programme tasks."""
+        key = info["task"]
+        st = self._task_state(tank.key, key)
+        tag = f"aqt_{tank.key}_{key}"
         if not info["active"]:
             if st.get("sent"):
                 await self._clear(tag)
                 st.update(sent=0, last_sent=None, due=None)
-                await self._save_task_state(tank.key, task.key, st)
+                await self._save_task_state(tank.key, key, st)
             return
         if st.get("due") != info["due"]:
             if st.get("sent"):
                 await self._clear(tag)  # occurrence completed or rolled over
             st.update(due=info["due"], sent=0, last_sent=None, snoozed_until=None)
-            await self._save_task_state(tank.key, task.key, st)
+            await self._save_task_state(tank.key, key, st)
             self._changed()
         due = _parse(info["due"])
         if now < due:
@@ -531,17 +701,17 @@ class AquariumTracker:
             send = True
         elif snoozed and last and last < snoozed:
             send = True
-        elif sent <= task.reminder.repeat_count and last and now - last >= timedelta(
-            minutes=task.reminder.repeat_interval_min
+        elif sent <= reminder.repeat_count and last and now - last >= timedelta(
+            minutes=reminder.repeat_interval_min
         ):
             send = True
         if not send:
             return
-        title, message = self._task_message(tank, task, info, due, now)
-        await self._notify(title, message, tag, f"/{PANEL_URL_PATH}?tank={tank.key}&task={task.key}",
-                           snooze_action=f"{NOTIFY_ACTION_PREFIX}{tank.key}|{task.key}")
+        title, text = message(info, due, now)
+        await self._notify(title, text, tag, f"/{PANEL_URL_PATH}?tank={tank.key}&task={key}",
+                           snooze_action=f"{NOTIFY_ACTION_PREFIX}{tank.key}|{key}")
         st.update(sent=sent + 1, last_sent=now.isoformat())
-        await self._save_task_state(tank.key, task.key, st)
+        await self._save_task_state(tank.key, key, st)
 
     def _task_message(self, tank: Tank, task: Task, info: dict[str, Any], due: datetime, now: datetime) -> tuple[str, str]:
         title = f"{tank.name}: {task.title}"
@@ -554,7 +724,7 @@ class AquariumTracker:
             ferts = [tank.fertilizers[k] for k in task.products] if task.products else list(tank.fertilizers.values())
             parts.append(
                 "Doz: " + ", ".join(
-                    f"{f.name} {f.default_dose:g} {f.unit}" if f.default_dose is not None else f.name
+                    f"{f.name} {f.default_dose:g} {_unit(f.unit)}" if f.default_dose is not None else f.name
                     for f in ferts
                 )
             )

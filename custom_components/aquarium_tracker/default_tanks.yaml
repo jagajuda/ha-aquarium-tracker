@@ -58,7 +58,7 @@ tanks:
       trace:  {name: Reeflowers Trace,  default_dose: 3, unit: drops}
       potash: {name: Reeflowers Potash, default_dose: 3, unit: drops}
       power_caps: {name: Dennerle Power Caps, default_dose: 3, unit: tablets, prefill: false}  # prefill: false -> empty in a manual form
-      nitrogen: {name: Seachem Nitrogen, unit: drops}  # dose/schedule not decided yet: loggable, no task
+      nitrogen: {name: Seachem Flourish Nitrogen, unit: drops, prefill: false}  # dosed by the nitrogen program below
     water_change_default_percent: null
     # Each action is its own label on the timeline. Add more freely.
     maintenance_actions:
@@ -66,6 +66,32 @@ tanks:
       prefilter_clean: {name: Prefilter clean}
       glass_clean:     {name: Glass clean}
       trim:            {name: Trimming}
+    # Measure-driven dosing. Start it from the panel (date picker); everything else follows the readings.
+    dosing_programs:
+      nitrogen:
+        title: Nitrogen
+        product: nitrogen
+        parameter: NO3
+        ml_per_drop: 0.05            # calibrate: weigh 40 drops of the product, grams / 40
+        test_dose_ml: 1
+        response_h: 24
+        label_per_ml_per_l: 30.3     # Seachem: 2.5 mL in 151 L shows +0.5 mg/L NO3 -> 30.3 per mL per litre
+        kit_resolution: 1            # smaller test-dose rise -> use label k
+        k_tolerance: 0.5             # measured k accepted within +-50% of label k
+        target: 12                   # mg/L NO3
+        ramp_max_ml_per_day: 0.5     # daily cap while raising to target (and for maintenance)
+        maintenance_start_ml_per_day: 0.07   # label: 5 mL/250 L twice a week, scaled to 12 L per day
+        bands:                       # applied to every NO3 reading in maintenance
+          - {gt: 20, factor: 0.5}
+          - {gt: 15, factor: 0.75}
+          - {gte: 10, factor: 1.0}
+          - {gte: 5, factor: 1.5}
+          - {factor: 2.0}
+        stable_band: [10, 15]
+        stable_count: 3              # in-band readings in a row -> weekly measurement stops (monthly test continues)
+        dose_at: "18:00"
+        measure: {weekdays: [sat], at: "13:00"}   # before the water change
+        reminder: {repeat_count: 3, repeat_interval_min: 60}
     tasks:
       water_change:
         title: Water change

@@ -186,3 +186,90 @@ def test_schedule_validation():
     raw["tanks"]["nano_tank"]["tasks"]["root_tabs"]["products"] = ["nope"]
     with pytest.raises(ConfigError):
         parse_config(raw)
+
+
+# ---------------------------------------------------------------- nitrogen programme
+def _prog_events(*items):
+    out = []
+    for kind, ts, v in items:
+        if kind == "m":
+            out.append({"type": "measurement", "ts": t(ts), "payload": {"values": {"NO3": v}}})
+        else:
+            out.append({"type": "fertilize", "ts": t(ts), "payload": {"doses": {"nitrogen": v}}})
+    return out
+
+
+def test_program_flow():
+    from aqt.logic import evaluate_program
+    pc = CFG.tanks["nano_tank"].programs["nitrogen"]
+    start = t("2026-11-16T18:00")
+    ev = lambda *i: evaluate_program(_prog_events(*i), pc, 12, start, NOW[0], TZ)
+    NOW = [t("2026-11-16T10:00")]
+    assert evaluate_program([], pc, 12, None, NOW[0], TZ).phase == "idle"
+    st = ev()
+    assert st.phase == "baseline" and st.tasks[0].due == start
+    assert abs(st.k_label - 2.525) < 0.01
+    NOW[0] = t("2026-11-16T18:10")
+    st = ev(("m", "2026-11-16T18:05", 5))
+    assert st.phase == "test_dose" and st.tasks[0].drops == 20
+    st = ev(("m", "2026-11-16T18:05", 5), ("d", "2026-11-16T18:07", 20))
+    assert st.phase == "response" and st.tasks[0].due == t("2026-11-17T18:07")
+    # rise below kit resolution -> label k; required = (12-5.5)/2.525 = 2.57 mL = 51 drops
+    NOW[0] = t("2026-11-17T18:30")
+    base = [("m", "2026-11-16T18:05", 5), ("d", "2026-11-16T18:07", 20), ("m", "2026-11-17T18:20", 5.5)]
+    st = ev(*base)
+    assert st.phase == "ramp" and st.k_source == "label" and st.k_reason == "below_resolution"
+    assert st.tasks[0].drops == 10  # capped at 0.5 mL/day
+    assert st.tasks[0].due == t("2026-11-18T18:00")
+    # measured k within tolerance is used: rise 2 mg/L per 1 mL -> k=2 (label 2.525, -21%)
+    st2 = ev(("m", "2026-11-16T18:05", 5), ("d", "2026-11-16T18:07", 20), ("m", "2026-11-17T18:20", 7))
+    assert st2.k_source == "measured" and st2.k == 2.0
+    # measured k far off -> label
+    st3 = ev(("m", "2026-11-16T18:05", 5), ("d", "2026-11-16T18:07", 20), ("m", "2026-11-17T18:20", 15))
+    assert st3.k_source == "label" and st3.k_reason == "deviates"
+    # ramp: 51 drops at 10/day -> 6 days; after 5 doses, last one is 1 drop
+    ramp = [("d", f"2026-11-{18+i}T18:05", 10) for i in range(5)]
+    NOW[0] = t("2026-11-22T19:00")
+    st = ev(*base, *ramp)
+    assert st.phase == "ramp" and st.tasks[0].drops == 1, (st.phase, st.tasks)
+    # finishing the ramp -> maintenance, first dose next day, 1.4 drops/day -> 1,1,2,1,2...
+    NOW[0] = t("2026-11-23T19:00")
+    st = ev(*base, *ramp, ("d", "2026-11-23T18:05", 1))
+    assert st.phase == "maintenance"
+    assert st.tasks[0].kind == "dose" and st.tasks[0].due == t("2026-11-24T18:00")
+    assert st.tasks[1].kind == "measure" and st.tasks[1].due == t("2026-11-28T13:00")
+    seq = []
+    log = list(base) + ramp + [("d", "2026-11-23T18:05", 1)]
+    for day in range(24, 31):
+        NOW[0] = t(f"2026-11-{day}T17:00")
+        s_ = ev(*log)
+        dose = s_.tasks[0]
+        seq.append(dose.drops)
+        log.append(("d", f"2026-11-{day}T18:05", dose.drops))
+    assert sum(seq) == 10 and set(seq) <= {1, 2}, seq  # 1.4/day * 7 = 9.8 -> 10
+
+
+def test_program_bands_and_stable():
+    from aqt.logic import evaluate_program
+    pc = CFG.tanks["nano_tank"].programs["nitrogen"]
+    start = t("2026-11-16T18:00")
+    base = [("m", "2026-11-16T18:05", 12), ("d", "2026-11-16T18:07", 20), ("m", "2026-11-17T18:20", 12.5)]
+    # already at target -> straight to maintenance
+    st = evaluate_program(_prog_events(*base), pc, 12, start, t("2026-11-17T19:00"), TZ)
+    assert st.phase == "maintenance" and st.required_ml == 0
+    # NO3 22 -> halve; then 3 in-band readings -> stable, weekly measure gone
+    reads = [("m", "2026-11-21T13:00", 22), ("m", "2026-11-28T13:00", 12),
+             ("m", "2026-12-05T13:00", 11), ("m", "2026-12-12T13:00", 14)]
+    st = evaluate_program(_prog_events(*base, *reads[:1]), pc, 12, start, t("2026-11-21T14:00"), TZ)
+    assert abs(st.rate_ml_per_day - 0.035) < 1e-9 and st.adjustments[0]["factor"] == 0.5
+    st = evaluate_program(_prog_events(*base, *reads), pc, 12, start, t("2026-12-12T14:00"), TZ)
+    assert st.phase == "stable" and st.in_band_count == 3
+    assert [x.kind for x in st.tasks] == ["dose"]
+    # out of band later (monthly test 4) -> x2, back to weekly
+    st = evaluate_program(_prog_events(*base, *reads, ("m", "2027-01-03T11:00", 4)), pc, 12, start,
+                          t("2027-01-03T12:00"), TZ)
+    assert st.phase == "maintenance" and st.in_band_count == 0 and st.adjustments[-1]["factor"] == 2.0
+    assert [x.kind for x in st.tasks] == ["dose", "measure"]
+    # 15-20 band -> x0.75, edges: 15 keeps, 20 -> 0.75, 10 keeps, 5 -> 1.5
+    for v, f in [(15, 1.0), (20, 0.75), (17, 0.75), (10, 1.0), (5, 1.5), (4.9, 2.0), (20.1, 0.5)]:
+        assert next(b for b in pc.bands if b.matches(v)).factor == f, v

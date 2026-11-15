@@ -167,3 +167,76 @@ async def test_flow(hass, setup, freezer, hass_ws_client, hass_admin_user):
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 
+
+
+async def test_nitrogen_program(hass, setup, freezer, hass_ws_client, hass_admin_user):
+    entry, calls, ws = setup
+
+    def prog_tasks(snap):
+        nano = snap["tanks"][1]
+        return nano["programs"][0], {x["task"]: x for x in nano["tasks"] if x["task"].startswith("nitrogen.")}
+
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    prog, tasks = prog_tasks(r["result"])
+    assert prog["status"]["phase"] == "idle" and not tasks["nitrogen.measure"]["active"]
+
+    # start at 18:00 today (Istanbul)
+    r = await ws_call(ws, type="aquarium_tracker/program", tank="nano_tank", program="nitrogen", action="start",
+                      start="2026-11-11T18:00:00+03:00")
+    assert r["success"], r
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    prog, tasks = prog_tasks(r["result"])
+    assert prog["status"]["phase"] == "baseline" and prog["start"].startswith("2026-11-11T15:00")
+    assert tasks["nitrogen.measure"]["due"].startswith("2026-11-11T15:00")
+
+    freezer.move_to(datetime(2026, 11, 11, 18, 0, 30, tzinfo=TZ))
+    async_fire_time_changed(hass); await hass.async_block_till_done()
+    sent = [c for c in calls if c.get("data", {}).get("tag") == "aqt_nano_tank_nitrogen.measure"]
+    assert sent and "NO3 ölç (başlangıç değeri)" in sent[-1]["message"] and "20 damla test dozu" in sent[-1]["message"], sent
+
+    rt = await hass.auth.async_create_refresh_token(hass_admin_user, "https://example.com/")
+    ws = await hass_ws_client(hass, access_token=hass.auth.async_create_access_token(rt))
+    await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="measurement",
+                  payload={"values": {"NO3": "5"}})
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    prog, tasks = prog_tasks(r["result"])
+    assert prog["status"]["phase"] == "test_dose"
+    assert tasks["nitrogen.dose"]["doses"] == {"nitrogen": 20} and tasks["nitrogen.dose"]["status"] == "due"
+    assert not tasks["nitrogen.measure"]["active"]
+    await hass.async_block_till_done()
+    assert any(c.get("message") == "clear_notification" and c["data"]["tag"] == "aqt_nano_tank_nitrogen.measure" for c in calls)
+
+    await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="fertilize",
+                  payload={"doses": {"nitrogen": "20"}})
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    prog, tasks = prog_tasks(r["result"])
+    assert prog["status"]["phase"] == "response"
+    # daily drops task untouched by the nitrogen dose
+    fert = [x for x in r["result"]["tanks"][1]["tasks"] if x["task"] == "fertilize"][0]
+    assert fert["status"] == "due"
+
+    freezer.move_to(datetime(2026, 11, 12, 18, 10, tzinfo=TZ))
+    async_fire_time_changed(hass); await hass.async_block_till_done()
+    rt = await hass.auth.async_create_refresh_token(hass_admin_user, "https://example.com/")
+    ws = await hass_ws_client(hass, access_token=hass.auth.async_create_access_token(rt))
+    await ws_call(ws, type="aquarium_tracker/add_event", tank="nano_tank", event_type="measurement",
+                  payload={"values": {"NO3": "5"}})
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    prog, tasks = prog_tasks(r["result"])
+    stt = prog["status"]
+    assert stt["phase"] == "ramp" and stt["k_source"] == "label" and stt["remaining_drops"] == 55
+    assert tasks["nitrogen.dose"]["drops"] == 10
+
+    # snooze works on programme tasks; stop clears it
+    r = await ws_call(ws, type="aquarium_tracker/snooze", tank="nano_tank", task="nitrogen.dose")
+    assert r["success"], r
+    r = await ws_call(ws, type="aquarium_tracker/program", tank="nano_tank", program="nitrogen", action="stop")
+    assert r["success"]
+    r = await ws_call(ws, type="aquarium_tracker/snapshot")
+    prog, tasks = prog_tasks(r["result"])
+    assert prog["status"]["phase"] == "idle" and not tasks["nitrogen.dose"]["active"]
+    r = await ws_call(ws, type="aquarium_tracker/program", tank="nano_tank", program="nitrogen", action="stop")
+    assert not r["success"]
+    r = await ws_call(ws, type="aquarium_tracker/events")
+    kinds = [e["payload"].get("kind") for e in r["result"] if e["type"] == "system"]
+    assert "program_start" in kinds and "program_stop" in kinds

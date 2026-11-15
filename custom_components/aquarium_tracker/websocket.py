@@ -160,6 +160,27 @@ async def ws_snooze(hass: HomeAssistant, connection, msg) -> None:
     connection.send_result(msg["id"], {"ok": True})
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "aquarium_tracker/program",
+        vol.Required("tank"): str,
+        vol.Required("program"): str,
+        vol.Required("action"): vol.In(["start", "stop"]),
+        vol.Optional("start"): vol.Any(str, None),
+    }
+)
+@websocket_api.async_response
+async def ws_program(hass: HomeAssistant, connection, msg) -> None:
+    if (tr := _tracker(hass, connection, msg)) is None:
+        return
+    try:
+        await tr.async_program(msg["tank"], msg["program"], msg["action"], _parse_ts(msg.get("start")))
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid", str(err))
+        return
+    connection.send_result(msg["id"], {"ok": True})
+
+
 @websocket_api.websocket_command({vol.Required("type"): "aquarium_tracker/reload"})
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -191,6 +212,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
         ws_audit,
         ws_set_mode,
         ws_snooze,
+        ws_program,
         ws_reload,
         ws_subscribe,
     ):

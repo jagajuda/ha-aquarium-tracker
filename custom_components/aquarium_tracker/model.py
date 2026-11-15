@@ -104,6 +104,49 @@ class CycleConfig:
 
 
 @dataclass
+class Band:
+    factor: float
+    gt: float | None = None   # applies when value > gt
+    gte: float | None = None  # applies when value >= gte (neither: catch-all)
+
+    def matches(self, v: float) -> bool:
+        if self.gt is not None:
+            return v > self.gt
+        if self.gte is not None:
+            return v >= self.gte
+        return True
+
+
+@dataclass
+class DosingProgram:
+    """Measure-driven dosing programme (e.g. nitrogen titration)."""
+
+    key: str
+    title: str
+    product: str
+    parameter: str
+    ml_per_drop: float
+    test_dose_ml: float
+    response_h: float
+    response_tolerance_h: float
+    label_per_ml_per_l: float  # test-visible rise per mL in 1 L (label-derived k, scaled by tank volume)
+    k_tolerance: float  # measured k accepted within this fraction of the label k
+    kit_resolution: float  # smaller rises are not trusted -> label k
+    target: float
+    ramp_max_ml_per_day: float
+    maintenance_start_ml_per_day: float
+    bands: list[Band]
+    stable_low: float
+    stable_high: float
+    stable_count: int
+    dose_schedule: Schedule
+    dose_early_h: float
+    measure_schedule: Schedule
+    measure_early_h: float
+    reminder: Reminder
+
+
+@dataclass
 class Tank:
     key: str
     name: str
@@ -118,6 +161,7 @@ class Tank:
     watch_entities: list[WatchEntity]
     cycle: CycleConfig
     default_temp_c: float | None
+    programs: dict[str, DosingProgram] = field(default_factory=dict)
 
 
 @dataclass
@@ -347,6 +391,55 @@ def parse_config(raw: Any) -> TrackerConfig:
                 )
             )
 
+        programs: dict[str, DosingProgram] = {}
+        for pkey, praw in (traw.get("dosing_programs") or {}).items():
+            pwhere = f"{where}.dosing_programs.{pkey}"
+            _key(pkey, pwhere)
+            _require(pkey not in tasks, f"{pwhere}: key clashes with a task")
+            _require(isinstance(praw, dict), f"{pwhere}: must be a mapping")
+            product = praw.get("product")
+            _require(product in ferts, f"{pwhere}: product must be one of the tank's fertilizers")
+            param = praw.get("parameter", "NO3")
+            _require(param in parameters, f"{pwhere}: unknown parameter {param!r}")
+            bands = []
+            for i, b in enumerate(praw.get("bands") or []):
+                _require(isinstance(b, dict) and "factor" in b, f"{pwhere}.bands[{i}]: factor required")
+                bands.append(Band(factor=float(b["factor"]),
+                                  gt=float(b["gt"]) if "gt" in b else None,
+                                  gte=float(b["gte"]) if "gte" in b else None))
+            _require(bool(bands) and bands[-1].gt is None and bands[-1].gte is None,
+                     f"{pwhere}.bands: last band must be a catch-all (factor only)")
+            stable = praw.get("stable_band", [10, 15])
+            rraw = praw.get("reminder") or {}
+            programs[pkey] = DosingProgram(
+                key=pkey,
+                title=str(praw.get("title", pkey)),
+                product=product,
+                parameter=param,
+                ml_per_drop=float(praw.get("ml_per_drop", 0.05)),
+                test_dose_ml=float(praw.get("test_dose_ml", 1)),
+                response_h=float(praw.get("response_h", 24)),
+                response_tolerance_h=float(praw.get("response_tolerance_h", 4)),
+                label_per_ml_per_l=float(praw["label_per_ml_per_l"]),
+                k_tolerance=float(praw.get("k_tolerance", 0.5)),
+                kit_resolution=float(praw.get("kit_resolution", 1)),
+                target=float(praw["target"]),
+                ramp_max_ml_per_day=float(praw.get("ramp_max_ml_per_day", 0.5)),
+                maintenance_start_ml_per_day=float(praw["maintenance_start_ml_per_day"]),
+                bands=bands,
+                stable_low=float(stable[0]),
+                stable_high=float(stable[1]),
+                stable_count=int(praw.get("stable_count", 3)),
+                dose_schedule=Schedule(type="daily", at=_parse_time(praw.get("dose_at", "18:00"), f"{pwhere}.dose_at")),
+                dose_early_h=float(praw.get("dose_early_h", 6)),
+                measure_schedule=_parse_schedule(
+                    {"type": "weekly", **(praw.get("measure") or {"weekdays": ["sat"], "at": "13:00"})},
+                    f"{pwhere}.measure"),
+                measure_early_h=float(praw.get("measure_early_h", 24)),
+                reminder=Reminder(int(rraw.get("repeat_count", 3)), int(rraw.get("repeat_interval_min", 60))),
+            )
+            _require(programs[pkey].ml_per_drop > 0, f"{pwhere}: ml_per_drop must be > 0")
+
         wc_default = traw.get("water_change_default_percent")
         tanks[tkey] = Tank(
             key=tkey,
@@ -361,6 +454,7 @@ def parse_config(raw: Any) -> TrackerConfig:
             tasks=tasks,
             watch_entities=watch,
             cycle=cycle,
+            programs=programs,
             default_temp_c=float(traw.get("default_temp_c", default_temp)) if (traw.get("default_temp_c", default_temp) is not None) else None,
         )
 
