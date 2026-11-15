@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import date, time
 from typing import Any
 
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -37,6 +37,8 @@ class Schedule:
     weekdays: list[int] = field(default_factory=list)
     weekday: int = 6
     nth: int = 1
+    months: int = 0  # interval only: step in calendar months instead of days
+    start: date | None = None  # interval only: first due date when nothing is logged yet
 
 
 @dataclass
@@ -58,6 +60,8 @@ class Task:
     params: list[str] | str | None = None
     # maintenance tasks: actions done in turn (a single `action` becomes a 1-item list)
     rotate: list[str] | None = None
+    # fertilize tasks: only events containing one of these products complete the task
+    products: list[str] | None = None
 
 
 @dataclass
@@ -73,6 +77,7 @@ class Fertilizer:
     name: str
     default_dose: float | None
     unit: str
+    prefill: bool = True  # prefill default_dose in a manual (not task-opened) form
 
 
 @dataclass
@@ -160,8 +165,24 @@ def _parse_schedule(raw: Any, where: str) -> Schedule:
     _require(stype in SCHEDULE_TYPES, f"{where}: schedule.type must be one of {SCHEDULE_TYPES}")
     sched = Schedule(type=stype, at=_parse_time(raw.get("at", "09:00"), f"{where}.at"))
     if stype == "interval":
-        sched.days = int(raw.get("days", 1))
-        _require(sched.days >= 1, f"{where}: days must be >= 1")
+        if "months" in raw:
+            _require("days" not in raw, f"{where}: use either days or months, not both")
+            sched.months = int(raw["months"])
+            _require(sched.months >= 1, f"{where}: months must be >= 1")
+        else:
+            sched.days = int(raw.get("days", 1))
+            _require(sched.days >= 1, f"{where}: days must be >= 1")
+        if raw.get("start") is not None:
+            st = raw["start"]
+            if isinstance(st, date):
+                sched.start = st
+            else:
+                try:
+                    sched.start = date.fromisoformat(str(st).strip())
+                except ValueError as err:
+                    raise ConfigError(f"{where}.start: invalid date {st!r}, expected 'YYYY-MM-DD'") from err
+    elif "start" in raw or "months" in raw:
+        raise ConfigError(f"{where}: start/months are only valid for interval schedules")
     elif stype == "weekly":
         wds = raw.get("weekdays")
         _require(isinstance(wds, list) and wds, f"{where}: weekly schedule needs weekdays list")
@@ -227,6 +248,7 @@ def parse_config(raw: Any) -> TrackerConfig:
                 name=str(fraw.get("name", fkey)),
                 default_dose=float(dd) if dd is not None else None,
                 unit=str(fraw.get("unit", "mL")),
+                prefill=bool(fraw.get("prefill", True)),
             )
 
         actions: dict[str, MaintenanceAction] = {}
@@ -279,6 +301,12 @@ def parse_config(raw: Any) -> TrackerConfig:
                     _require(a in actions, f"{twhere}: unknown maintenance action {a!r}")
             else:
                 _require(rotate is None, f"{twhere}: action/rotate only valid for maintenance tasks")
+            products = raw_task.get("products")
+            if products is not None:
+                _require(event == "fertilize", f"{twhere}: products only valid for fertilize tasks")
+                _require(isinstance(products, list) and products, f"{twhere}: products must be a non-empty list")
+                for fp in products:
+                    _require(fp in ferts, f"{twhere}: unknown fertilizer {fp!r}")
             default_modes = ["cycling"] if params == "cycle" else ["maintenance"]
             modes = list(raw_task.get("modes", default_modes))
             for m in modes:
@@ -297,6 +325,7 @@ def parse_config(raw: Any) -> TrackerConfig:
                 early_window_h=float(raw_task.get("early_window_h", 6)),
                 params=params,
                 rotate=list(rotate) if rotate else None,
+                products=list(products) if products else None,
             )
 
         watch: list[WatchEntity] = []

@@ -43,6 +43,13 @@ def _matches(s: Schedule, d: date) -> bool:
     return False
 
 
+def add_months(d: date, months: int) -> date:
+    """Same day N calendar months later, clamped to the month's last day (29 Nov + 3 -> 28 Feb)."""
+    m = d.month - 1 + months
+    y, m = d.year + m // 12, m % 12 + 1
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
 def _at(d: date, s: Schedule, tz: tzinfo) -> datetime:
     return datetime.combine(d, s.at, tzinfo=tz)
 
@@ -88,10 +95,13 @@ def compute_due(
     `now` is done if a matching event falls inside that window.
     """
     if s.type == "interval":
-        days = interval_days or s.days
         if event_times:
-            last = max(event_times)
-            return _at(last.astimezone(tz).date() + timedelta(days=days), s, tz)
+            last_day = max(event_times).astimezone(tz).date()
+            if s.months and not interval_days:
+                return _at(add_months(last_day, s.months), s, tz)
+            return _at(last_day + timedelta(days=interval_days or s.days), s, tz)
+        if s.start is not None:
+            return _at(s.start, s, tz)
         first = _at(anchor.astimezone(tz).date(), s, tz)
         if first < anchor:
             first = _at(anchor.astimezone(tz).date() + timedelta(days=1), s, tz)

@@ -40,7 +40,12 @@ If the YAML is invalid the integration fails to load and the error is shown in t
   toggled on the dashboard.
 - **Task**: a reminder bound to an event type. Logging a matching event completes the current occurrence and clears
   the phone notification.
-  - `interval`: next due = (date of last matching event + `days`) at `at`.
+  - `interval`: next due = (date of last matching event + `days`) at `at`. Use `months: N` instead of `days` for
+    calendar months (29 Nov + 3 → 28 Feb, clamped to month end). `start: "YYYY-MM-DD"` sets the first due date
+    while nothing is logged yet.
+  - Fertilize tasks can list `products`: only events containing one of them complete the task, so a daily drops
+    task and a 3-monthly root-tab task don't complete each other. A fertilizer with `prefill: false` stays empty in a
+    manual form and is prefilled only when opened from its own task.
   - `daily` / `weekly` / `monthly`: fixed slots. An event inside `[slot - early_window_h, next slot - early_window_h)`
     completes that slot. A missed slot stays overdue until the next slot's window opens.
   - `reminder`: first push at due time, then `repeat_count` repeats every `repeat_interval_min` until logged.

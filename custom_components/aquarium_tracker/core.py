@@ -185,6 +185,7 @@ class AquariumTracker:
             "cycle_phase": cs.phase if cs else None,
             "action": None,
             "action_name": None,
+            "products": task.products,
         }
         if not active:
             return info
@@ -200,7 +201,11 @@ class AquariumTracker:
             info["action"] = action
             info["action_name"] = tank.maintenance_actions[action].name
         else:
-            times = [_parse(e["ts"]) for e in self._events if e["tank"] == tank.key and e["type"] == task.event]
+            times = [
+                _parse(e["ts"])
+                for e in self._events
+                if e["tank"] == tank.key and e["type"] == task.event and self._matches_products(task, e)
+            ]
             interval_days = tank.cycle.verify_every_days if (cs and cs.phase == "verify") else None
             due = compute_due(task.schedule, now, tz, times, anchor, task.early_window_h, interval_days)
         info["due"] = due.astimezone(dt_util.UTC).isoformat()
@@ -212,6 +217,13 @@ class AquariumTracker:
         else:
             info["status"] = "due"
         return info
+
+    @staticmethod
+    def _matches_products(task: Task, ev: dict[str, Any]) -> bool:
+        if not task.products:
+            return True
+        doses = (ev.get("payload") or {}).get("doses") or {}
+        return any(p in doses for p in task.products)
 
     def all_tasks(self) -> list[dict[str, Any]]:
         now = dt_util.utcnow()
@@ -253,7 +265,7 @@ class AquariumTracker:
                         for s in tank.stock_solutions.values()
                     ],
                     "fertilizers": [
-                        {"key": f.key, "name": f.name, "default_dose": f.default_dose, "unit": f.unit}
+                        {"key": f.key, "name": f.name, "default_dose": f.default_dose, "unit": f.unit, "prefill": f.prefill}
                         for f in tank.fertilizers.values()
                     ],
                     "maintenance_actions": [
@@ -539,10 +551,11 @@ class AquariumTracker:
             if info.get("cycle_phase") == "verify":
                 parts.append(f"(son dozdan sonraki {tank.cycle.test_window_h:g} saat içinde)")
         elif task.event == "fertilize" and tank.fertilizers:
+            ferts = [tank.fertilizers[k] for k in task.products] if task.products else list(tank.fertilizers.values())
             parts.append(
                 "Doz: " + ", ".join(
                     f"{f.name} {f.default_dose:g} {f.unit}" if f.default_dose is not None else f.name
-                    for f in tank.fertilizers.values()
+                    for f in ferts
                 )
             )
         elif task.event == "maintenance" and info.get("action_name"):
