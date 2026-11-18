@@ -73,7 +73,7 @@ tanks:
         product: nitrogen
         parameter: NO3
         ml_per_drop: 0.05            # calibrate: weigh 40 drops of the product, grams / 40
-        test_dose_ml: 1
+        test_dose_ml: 0.5            # 10 drops; stays within the 0.5 mL daily cap (shrimp tank)
         response_h: 24
         label_per_ml_per_l: 30.3     # Seachem: 2.5 mL in 151 L shows +0.5 mg/L NO3 -> 30.3 per mL per litre
         kit_resolution: 1            # smaller test-dose rise -> use label k
