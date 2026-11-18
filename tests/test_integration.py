@@ -192,7 +192,7 @@ async def test_nitrogen_program(hass, setup, freezer, hass_ws_client, hass_admin
     freezer.move_to(datetime(2026, 11, 11, 18, 0, 30, tzinfo=TZ))
     async_fire_time_changed(hass); await hass.async_block_till_done()
     sent = [c for c in calls if c.get("data", {}).get("tag") == "aqt_nano_tank_nitrogen.measure"]
-    assert sent and "NO3 ölç (başlangıç değeri)" in sent[-1]["message"] and "20 damla test dozu" in sent[-1]["message"], sent
+    assert sent and "NO3 ölç (başlangıç değeri)" in sent[-1]["message"] and "10 damla test dozu" in sent[-1]["message"], sent
 
     rt = await hass.auth.async_create_refresh_token(hass_admin_user, "https://example.com/")
     ws = await hass_ws_client(hass, access_token=hass.auth.async_create_access_token(rt))
@@ -201,7 +201,7 @@ async def test_nitrogen_program(hass, setup, freezer, hass_ws_client, hass_admin
     r = await ws_call(ws, type="aquarium_tracker/snapshot")
     prog, tasks = prog_tasks(r["result"])
     assert prog["status"]["phase"] == "test_dose"
-    assert tasks["nitrogen.dose"]["doses"] == {"nitrogen": 20} and tasks["nitrogen.dose"]["status"] == "due"
+    assert tasks["nitrogen.dose"]["doses"] == {"nitrogen": 10} and tasks["nitrogen.dose"]["status"] == "due"
     assert not tasks["nitrogen.measure"]["active"]
     await hass.async_block_till_done()
     assert any(c.get("message") == "clear_notification" and c["data"]["tag"] == "aqt_nano_tank_nitrogen.measure" for c in calls)

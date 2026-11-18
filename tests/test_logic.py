@@ -211,7 +211,7 @@ def test_program_flow():
     assert abs(st.k_label - 2.525) < 0.01
     NOW[0] = t("2026-11-16T18:10")
     st = ev(("m", "2026-11-16T18:05", 5))
-    assert st.phase == "test_dose" and st.tasks[0].drops == 20
+    assert st.phase == "test_dose" and st.tasks[0].drops == 10
     st = ev(("m", "2026-11-16T18:05", 5), ("d", "2026-11-16T18:07", 20))
     assert st.phase == "response" and st.tasks[0].due == t("2026-11-17T18:07")
     # rise below kit resolution -> label k; required = (12-5.5)/2.525 = 2.57 mL = 51 drops
